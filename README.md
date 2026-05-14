@@ -50,3 +50,9 @@ curl http://127.0.0.1:8080/v1/models
 The chart is Kubernetes-native and avoids cloud-specific resources by default.
 
 Optional cloud integrations (e.g., AWS EBS CSI, load balancers, IAM roles for service accounts) can be added through values overrides as needed.
+
+## Model configuration
+
+- The default gateway model is `google/gemma-4-31B-it` (configurable via `gateway.env.defaultModel`).
+- Configure one or more inference runtimes with `inference.models`.
+- When `inference.enabled=true`, the chart creates one vLLM Deployment/Service per model and the gateway routes requests by requested model ID.

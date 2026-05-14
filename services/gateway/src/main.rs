@@ -1,4 +1,4 @@
-use std::{env, sync::Arc};
+use std::{collections::HashMap, env, sync::Arc};
 
 use anyhow::{Context, Result};
 use axum::{
@@ -18,6 +18,7 @@ use tracing::{error, info};
 #[derive(Clone)]
 struct AppState {
     upstream_base: String,
+    model_upstreams: HashMap<String, String>,
     default_model: String,
     upstream_api_key: Option<String>,
     client: Client,
@@ -46,7 +47,8 @@ struct ChatCompletionRequest {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let env_filter = env::var("RUST_LOG").unwrap_or_else(|_| "info,duihua_gateway=debug".to_string());
+    let env_filter =
+        env::var("RUST_LOG").unwrap_or_else(|_| "info,duihua_gateway=debug".to_string());
     tracing_subscriber::fmt().with_env_filter(env_filter).init();
 
     let bind_addr = env::var("BIND_ADDR").unwrap_or_else(|_| "0.0.0.0:8080".to_string());
@@ -54,11 +56,14 @@ async fn main() -> Result<()> {
         .unwrap_or_else(|_| "http://vllm:8000/v1".to_string())
         .trim_end_matches('/')
         .to_string();
-    let default_model = env::var("DEFAULT_MODEL").unwrap_or_else(|_| "meta-llama/Llama-3.1-8B-Instruct".to_string());
+    let default_model =
+        env::var("DEFAULT_MODEL").unwrap_or_else(|_| "google/gemma-4-31B-it".to_string());
     let upstream_api_key = env::var("UPSTREAM_API_KEY").ok();
+    let model_upstreams = parse_model_upstreams(env::var("MODEL_UPSTREAMS").ok());
 
     let state = Arc::new(AppState {
         upstream_base,
+        model_upstreams,
         default_model,
         upstream_api_key,
         client: Client::new(),
@@ -81,18 +86,42 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
+fn parse_model_upstreams(value: Option<String>) -> HashMap<String, String> {
+    value
+        .unwrap_or_default()
+        .split(',')
+        .filter_map(|pair| {
+            let (model, upstream) = pair.split_once('=')?;
+            Some((
+                model.trim().to_string(),
+                upstream.trim().trim_end_matches('/').to_string(),
+            ))
+        })
+        .filter(|(model, upstream)| !model.is_empty() && !upstream.is_empty())
+        .collect()
+}
+
 async fn healthz() -> impl IntoResponse {
     (StatusCode::OK, "ok")
 }
 
 async fn list_models(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let mut models: Vec<String> = state.model_upstreams.keys().cloned().collect();
+    if !models.iter().any(|m| m == &state.default_model) {
+        models.push(state.default_model.clone());
+    }
+    models.sort();
+
     let body = ModelListResponse {
         object: "list",
-        data: vec![ModelItem {
-            id: state.default_model.clone(),
-            object: "model",
-            owned_by: "duihua",
-        }],
+        data: models
+            .into_iter()
+            .map(|id| ModelItem {
+                id,
+                object: "model",
+                owned_by: "duihua",
+            })
+            .collect(),
     };
 
     (StatusCode::OK, Json(body))
@@ -107,7 +136,18 @@ async fn chat_completions(
         payload.model = Some(state.default_model.clone());
     }
 
-    let url = format!("{}/chat/completions", state.upstream_base);
+    let selected_model = payload
+        .model
+        .as_deref()
+        .unwrap_or(state.default_model.as_str())
+        .to_string();
+
+    let upstream = state
+        .model_upstreams
+        .get(&selected_model)
+        .unwrap_or(&state.upstream_base);
+
+    let url = format!("{}/chat/completions", upstream);
     let mut req = state.client.post(&url).json(&payload);
 
     if let Some(auth_header) = headers.get("authorization") {

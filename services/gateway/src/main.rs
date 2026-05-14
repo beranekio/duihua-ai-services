@@ -2,6 +2,7 @@ use std::{env, sync::Arc};
 
 use anyhow::{Context, Result};
 use axum::{
+    body::Body,
     extract::State,
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
@@ -118,13 +119,12 @@ async fn chat_completions(
     match req.send().await {
         Ok(resp) => {
             let status = resp.status();
-            match resp.bytes().await {
-                Ok(bytes) => (status, bytes).into_response(),
-                Err(e) => {
-                    error!("failed to read upstream response body: {e}");
-                    (StatusCode::BAD_GATEWAY, "failed to read upstream response").into_response()
-                }
-            }
+            let headers = resp.headers().clone();
+            let stream = resp.bytes_stream();
+            let mut downstream = Response::new(Body::from_stream(stream));
+            *downstream.status_mut() = status;
+            *downstream.headers_mut() = headers;
+            downstream
         }
         Err(e) => {
             error!("upstream request failed: {e}");

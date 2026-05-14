@@ -16,6 +16,7 @@ gateway:
       memory: 1Gi
   env:
     defaultModel: meta-llama/Llama-3.1-8B-Instruct
+    upstreamBaseUrl: http://vllm:8000/v1
 
 inference:
   enabled: true

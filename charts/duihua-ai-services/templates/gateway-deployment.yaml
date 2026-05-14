@@ -27,7 +27,7 @@ spec:
               {{- if .Values.inference.enabled }}
               value: "http://{{ include "duihua.fullname" . }}-inference:8000/v1"
               {{- else }}
-              value: "http://vllm:8000/v1"
+              value: {{ .Values.gateway.env.upstreamBaseUrl | quote }}
               {{- end }}
           resources:
 {{ toYaml .Values.gateway.resources | indent 12 }}

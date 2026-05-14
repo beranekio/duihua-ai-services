@@ -24,10 +24,12 @@ spec:
             - name: DEFAULT_MODEL
               value: {{ .Values.gateway.env.defaultModel | quote }}
             - name: UPSTREAM_BASE_URL
-              {{- if .Values.inference.enabled }}
-              value: "http://{{ include "duihua.fullname" . }}-inference:8000/v1"
-              {{- else }}
               value: {{ .Values.gateway.env.upstreamBaseUrl | quote }}
+            - name: MODEL_UPSTREAMS
+              {{- if .Values.inference.enabled }}
+              value: "{{- range $index, $model := .Values.inference.models }}{{ if $index }},{{ end }}{{ $model.name }}=http://{{ include "duihua.fullname" $ }}-inference-{{ $index }}:8000/v1{{- end }}"
+              {{- else }}
+              value: ""
               {{- end }}
           resources:
 {{ toYaml .Values.gateway.resources | indent 12 }}

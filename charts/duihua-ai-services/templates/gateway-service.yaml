@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "duihua.fullname" . }}-gateway
+spec:
+  type: {{ .Values.gateway.service.type }}
+  selector:
+    app: {{ include "duihua.fullname" . }}-gateway
+  ports:
+    - port: {{ .Values.gateway.service.port }}
+      targetPort: 8080
+      protocol: TCP
+      name: http

@@ -1,0 +1,33 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "duihua.fullname" . }}-gateway
+spec:
+  replicas: {{ .Values.gateway.replicaCount }}
+  selector:
+    matchLabels:
+      app: {{ include "duihua.fullname" . }}-gateway
+  template:
+    metadata:
+      labels:
+        app: {{ include "duihua.fullname" . }}-gateway
+    spec:
+      containers:
+        - name: gateway
+          image: "{{ .Values.gateway.image.repository }}:{{ .Values.gateway.image.tag }}"
+          imagePullPolicy: {{ .Values.gateway.image.pullPolicy }}
+          ports:
+            - containerPort: 8080
+          env:
+            - name: BIND_ADDR
+              value: "0.0.0.0:8080"
+            - name: DEFAULT_MODEL
+              value: {{ .Values.gateway.env.defaultModel | quote }}
+            - name: UPSTREAM_BASE_URL
+              {{- if .Values.inference.enabled }}
+              value: "http://{{ include "duihua.fullname" . }}-inference:8000/v1"
+              {{- else }}
+              value: "http://vllm:8000/v1"
+              {{- end }}
+          resources:
+{{ toYaml .Values.gateway.resources | indent 12 }}

@@ -1,0 +1,6 @@
+apiVersion: v2
+name: duihua-ai-services
+description: OpenAI API compatible self-hosted AI services for Kubernetes
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

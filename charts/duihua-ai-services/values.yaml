@@ -1,0 +1,51 @@
+gateway:
+  replicaCount: 1
+  image:
+    repository: ghcr.io/example/duihua-gateway
+    tag: "0.1.0"
+    pullPolicy: IfNotPresent
+  service:
+    type: ClusterIP
+    port: 80
+  resources:
+    requests:
+      cpu: 250m
+      memory: 256Mi
+    limits:
+      cpu: 1000m
+      memory: 1Gi
+  env:
+    defaultModel: meta-llama/Llama-3.1-8B-Instruct
+    upstreamBaseUrl: http://vllm:8000/v1
+
+inference:
+  enabled: true
+  image:
+    repository: vllm/vllm-openai
+    tag: latest
+    pullPolicy: IfNotPresent
+  model: meta-llama/Llama-3.1-8B-Instruct
+  resources:
+    requests:
+      cpu: "2"
+      memory: 8Gi
+      nvidia.com/gpu: "1"
+    limits:
+      cpu: "4"
+      memory: 16Gi
+      nvidia.com/gpu: "1"
+
+serviceAccount:
+  create: true
+  name: ""
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: duihua.local
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []

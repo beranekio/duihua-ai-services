@@ -45,6 +45,14 @@ struct ChatCompletionRequest {
     extra: Value,
 }
 
+#[derive(Deserialize, Serialize)]
+struct EmbeddingsRequest {
+    model: Option<String>,
+    input: Value,
+    #[serde(flatten)]
+    extra: Value,
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let env_filter =
@@ -73,6 +81,7 @@ async fn main() -> Result<()> {
         .route("/healthz", get(healthz))
         .route("/v1/models", get(list_models))
         .route("/v1/chat/completions", post(chat_completions))
+        .route("/v1/embeddings", post(embeddings))
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
         .with_state(state);
@@ -147,7 +156,47 @@ async fn chat_completions(
         .get(&selected_model)
         .unwrap_or(&state.upstream_base);
 
-    let url = format!("{}/chat/completions", upstream);
+    proxy_request(
+        state.as_ref(),
+        headers,
+        payload,
+        upstream,
+        "chat/completions",
+    )
+    .await
+}
+
+async fn embeddings(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(mut payload): Json<EmbeddingsRequest>,
+) -> Response {
+    if payload.model.is_none() {
+        payload.model = Some(state.default_model.clone());
+    }
+
+    let selected_model = payload
+        .model
+        .as_deref()
+        .unwrap_or(state.default_model.as_str())
+        .to_string();
+
+    let upstream = state
+        .model_upstreams
+        .get(&selected_model)
+        .unwrap_or(&state.upstream_base);
+
+    proxy_request(state.as_ref(), headers, payload, upstream, "embeddings").await
+}
+
+async fn proxy_request<T: Serialize>(
+    state: &AppState,
+    headers: HeaderMap,
+    payload: T,
+    upstream: &str,
+    endpoint: &str,
+) -> Response {
+    let url = format!("{}/{}", upstream, endpoint);
     let mut req = state.client.post(&url).json(&payload);
 
     if let Some(auth_header) = headers.get("authorization") {

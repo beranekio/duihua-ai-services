@@ -4,7 +4,7 @@ Duihua AI Services is an OpenAI API-compatible platform for serving open-source 
 
 ## Architecture
 
-- **Gateway (Rust, Axum)**: Provides OpenAI-compatible endpoints (`/v1/models`, `/v1/chat/completions`) and proxies requests to a model runtime.
+- **Gateway (Rust, Axum)**: Provides OpenAI-compatible endpoints (`/v1/models`, `/v1/chat/completions`, `/v1/embeddings`) and proxies requests to a model runtime.
 - **Inference runtime**: Optional bundled `vllm/vllm-openai` deployment for OSS model hosting.
 - **Kubernetes-first deployment**: Packaged as a cloud-provider-neutral Helm chart.
 

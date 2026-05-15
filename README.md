@@ -32,6 +32,23 @@ docker push ghcr.io/<org>/duihua-gateway:0.1.0
 
 ### 2) Deploy with Helm
 
+Install KEDA and the KEDA HTTP add-on first (one-time per cluster):
+
+```bash
+helm repo add kedacore https://kedacore.github.io/charts
+helm repo update
+
+helm upgrade --install keda kedacore/keda \
+  --namespace keda \
+  --create-namespace
+
+helm upgrade --install keda-add-ons-http kedacore/keda-add-ons-http \
+  --namespace keda \
+  --set interceptor.responseHeaderTimeout=120s
+```
+
+Then deploy Duihua:
+
 ```bash
 helm upgrade --install duihua charts/duihua-ai-services \
   --set gateway.image.repository=ghcr.io/<org>/duihua-gateway \
@@ -56,3 +73,44 @@ Optional cloud integrations (e.g., AWS EBS CSI, load balancers, IAM roles for se
 - The default gateway model is `google/gemma-4-31B-it` (configurable via `gateway.env.defaultModel`).
 - Configure one or more inference runtimes with `inference.models`.
 - When `inference.enabled=true`, the chart creates one vLLM Deployment/Service per model and the gateway routes requests by requested model ID.
+
+### KEDA autoscaling for model deployments (default)
+
+Inference models always use KEDA HTTP autoscaling. By default they scale from `0` when requests arrive and scale back down after an idle period.
+
+This feature uses [KEDA](https://keda.sh/) with the KEDA HTTP add-on (must already be installed in your cluster).
+
+Default behavior can be tuned globally, and overridden per model:
+
+```yaml
+inference:
+  autoscaling:
+    default:
+      targetPendingRequests: 25
+      scaledownPeriod: 600
+      replicas:
+        min: 0
+        max: 1
+  models:
+    - name: google/gemma-4-31B-it
+      autoscaling:
+        hosts:
+          - api.example.com
+        pathPrefixes:
+          - /v1/chat/completions
+```
+
+The chart creates an `HTTPScaledObject` for every model and sets Deployment replicas to `autoscaling.replicas.min`.
+Gateway model upstreams are routed through the KEDA HTTP interceptor proxy (`inference.autoscaling.interceptorProxyUrl`) so scale-to-zero models cold-start correctly.
+
+If you need a model to stay warm, set its minimum replicas to `1` (or higher):
+
+```yaml
+inference:
+  models:
+    - name: my/latency-critical-model
+      autoscaling:
+        replicas:
+          min: 1
+          max: 2
+```

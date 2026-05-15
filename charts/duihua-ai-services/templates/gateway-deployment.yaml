@@ -27,7 +27,7 @@ spec:
               value: {{ .Values.gateway.env.upstreamBaseUrl | quote }}
             - name: MODEL_UPSTREAMS
               {{- if .Values.inference.enabled }}
-              value: "{{- range $index, $model := .Values.inference.models }}{{ if $index }},{{ end }}{{ $model.name }}=http://{{ include "duihua.fullname" $ }}-inference-{{ $index }}:8000/v1{{- end }}"
+              value: "{{- range $index, $model := .Values.inference.models }}{{ if $index }},{{ end }}{{ $model.name }}={{ $.Values.inference.autoscaling.interceptorProxyUrl }}/{{ include "duihua.fullname" $ }}-inference-{{ $index }}/v1{{- end }}"
               {{- else }}
               value: ""
               {{- end }}

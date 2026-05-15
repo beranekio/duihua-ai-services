@@ -1,0 +1,41 @@
+services:
+  gateway:
+    build:
+      context: ./services/gateway
+    environment:
+      BIND_ADDR: 0.0.0.0:8080
+      UPSTREAM_BASE_URL: http://vllm:8000/v1
+      DEFAULT_MODEL: Qwen/Qwen3.5-0.8B
+    ports:
+      - "8080:8080"
+    depends_on:
+      vllm:
+        condition: service_started
+
+  vllm:
+    image: vllm/vllm-openai-cpu:latest
+    command:
+      - Qwen/Qwen3.5-0.8B
+      - --served-model-name
+      - Qwen/Qwen3.5-0.8B
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      - --max-model-len
+      - "262144"
+      - --safetensors-load-strategy
+      - "lazy"
+      - --gpu-memory-utilization
+      - "0.6"
+    environment:
+      # Set this in your shell if the model pull requires authentication.
+      HUGGING_FACE_HUB_TOKEN: ${HUGGING_FACE_HUB_TOKEN:-}
+    ports:
+      - "8000:8000"
+    volumes:
+      - vllm-cache:/root/.cache/huggingface
+    shm_size: "2g"
+
+volumes:
+  vllm-cache:

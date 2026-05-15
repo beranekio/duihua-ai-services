@@ -41,6 +41,9 @@ inference:
     # Requires KEDA + KEDA HTTP add-on installed in the cluster.
     # Every model uses a HTTPScaledObject and starts from replicas.min.
     # Set replicas.min > 0 to keep a model warm.
+    # Gateway model traffic is routed through interceptorProxyUrl so
+    # requests queue and trigger scale-up from zero replicas.
+    interceptorProxyUrl: http://keda-add-ons-http-interceptor-proxy.keda:8080
     default:
       hosts: []
       pathPrefixes:

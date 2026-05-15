@@ -101,6 +101,7 @@ inference:
 ```
 
 The chart creates an `HTTPScaledObject` for every model and sets Deployment replicas to `autoscaling.replicas.min`.
+Gateway model upstreams are routed through the KEDA HTTP interceptor proxy (`inference.autoscaling.interceptorProxyUrl`) so scale-to-zero models cold-start correctly.
 
 If you need a model to stay warm, set its minimum replicas to `1` (or higher):
 

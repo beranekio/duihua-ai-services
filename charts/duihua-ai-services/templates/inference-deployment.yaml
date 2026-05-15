@@ -2,12 +2,15 @@
 {{- $fullName := include "duihua.fullname" . }}
 {{- range $index, $model := .Values.inference.models }}
 {{- $name := printf "%s-inference-%d" $fullName $index }}
+{{- $defaultAutoscaling := $.Values.inference.autoscaling.default | default dict }}
+{{- $modelAutoscaling := $model.autoscaling | default dict }}
+{{- $autoscaling := mergeOverwrite (deepCopy $defaultAutoscaling) $modelAutoscaling }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: {{ $name }}
 spec:
-  replicas: 1
+  replicas: {{ $autoscaling.replicas.min | default 0 }}
   selector:
     matchLabels:
       app: {{ $name }}
@@ -38,6 +41,39 @@ spec:
     - name: http
       port: 8000
       targetPort: 8000
+---
+apiVersion: http.keda.sh/v1alpha1
+kind: HTTPScaledObject
+metadata:
+  name: {{ $name }}
+  {{- with $autoscaling.annotations }}
+  annotations:
+{{ toYaml . | indent 4 }}
+  {{- end }}
+spec:
+  {{- $hosts := ($autoscaling.hosts | default list) }}
+  hosts:
+    {{- if gt (len $hosts) 0 }}
+    {{- range $host := $hosts }}
+    - {{ $host | quote }}
+    {{- end }}
+    {{- else }} []
+    {{- end }}
+  {{- $pathPrefixes := ($autoscaling.pathPrefixes | default (list "/")) }}
+  pathPrefixes:
+    {{- range $path := $pathPrefixes }}
+    - {{ $path | quote }}
+    {{- end }}
+  scaleTargetRef:
+    name: {{ $name }}
+    kind: Deployment
+    service: {{ $name }}
+    port: 8000
+  replicas:
+    min: {{ $autoscaling.replicas.min | default 0 }}
+    max: {{ $autoscaling.replicas.max | default 1 }}
+  targetPendingRequests: {{ $autoscaling.targetPendingRequests | default 100 }}
+  scaledownPeriod: {{ $autoscaling.scaledownPeriod | default 300 }}
 ---
 {{- end }}
 {{- end }}

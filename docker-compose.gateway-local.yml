@@ -15,7 +15,7 @@ services:
         condition: service_started
 
   vllm:
-    image: vllm/vllm-openai:latest
+    image: vllm/vllm-openai-cpu:latest
     command:
       - --model
       - Qwen/Qwen3.5-0.8B
@@ -25,6 +25,12 @@ services:
       - 0.0.0.0
       - --port
       - "8000"
+      - --max-model-length
+      - "262144"
+      - --safetensors-load-strategy
+      - "lazy"
+      - --gpu-memory-utilization
+      - "0.6"
     environment:
       # Set this in your shell if the model pull requires authentication.
       HUGGING_FACE_HUB_TOKEN: ${HUGGING_FACE_HUB_TOKEN:-}

@@ -1,5 +1,3 @@
-version: "3.9"
-
 services:
   gateway:
     build:
@@ -17,7 +15,6 @@ services:
   vllm:
     image: vllm/vllm-openai-cpu:latest
     command:
-      - --model
       - Qwen/Qwen3.5-0.8B
       - --served-model-name
       - Qwen/Qwen3.5-0.8B
@@ -25,7 +22,7 @@ services:
       - 0.0.0.0
       - --port
       - "8000"
-      - --max-model-length
+      - --max-model-len
       - "262144"
       - --safetensors-load-strategy
       - "lazy"

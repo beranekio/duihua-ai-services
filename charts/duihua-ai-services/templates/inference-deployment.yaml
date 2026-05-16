@@ -56,12 +56,12 @@ spec:
     port: 8000
   {{- $hosts := ($autoscaling.hosts | default list) }}
   rules:
-    - hosts:
+    -
       {{- if gt (len $hosts) 0 }}
+      hosts:
       {{- range $host := $hosts }}
         - {{ $host | quote }}
       {{- end }}
-      {{- else }} []
       {{- end }}
   {{- $pathPrefixes := ($autoscaling.pathPrefixes | default (list "/")) }}
       paths:

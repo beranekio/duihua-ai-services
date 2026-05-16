@@ -42,8 +42,8 @@ spec:
       port: 8000
       targetPort: 8000
 ---
-apiVersion: http.keda.sh/v1alpha1
-kind: HTTPScaledObject
+apiVersion: http.keda.sh/v1beta1
+kind: InterceptorRoute
 metadata:
   name: {{ $name }}
   {{- with $autoscaling.annotations }}
@@ -51,29 +51,48 @@ metadata:
 {{ toYaml . | indent 4 }}
   {{- end }}
 spec:
+  target:
+    service: {{ $name }}
+    port: 8000
   {{- $hosts := ($autoscaling.hosts | default list) }}
-  hosts:
-    {{- if gt (len $hosts) 0 }}
-    {{- range $host := $hosts }}
-    - {{ $host | quote }}
-    {{- end }}
-    {{- else }} []
-    {{- end }}
+  rules:
+    - hosts:
+      {{- if gt (len $hosts) 0 }}
+      {{- range $host := $hosts }}
+        - {{ $host | quote }}
+      {{- end }}
+      {{- else }} []
+      {{- end }}
   {{- $pathPrefixes := ($autoscaling.pathPrefixes | default (list "/")) }}
-  pathPrefixes:
-    {{- range $path := $pathPrefixes }}
-    - {{ $path | quote }}
-    {{- end }}
+      paths:
+      {{- range $path := $pathPrefixes }}
+        - value: {{ $path | quote }}
+      {{- end }}
+  scalingMetric:
+    concurrency:
+      targetValue: {{ $autoscaling.targetPendingRequests | default 100 }}
+---
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: {{ $name }}
+  {{- with $autoscaling.scaledObjectAnnotations }}
+  annotations:
+{{ toYaml . | indent 4 }}
+  {{- end }}
+spec:
   scaleTargetRef:
     name: {{ $name }}
     kind: Deployment
-    service: {{ $name }}
-    port: 8000
-  replicas:
-    min: {{ $autoscaling.replicas.min | default 0 }}
-    max: {{ $autoscaling.replicas.max | default 1 }}
-  targetPendingRequests: {{ $autoscaling.targetPendingRequests | default 100 }}
-  scaledownPeriod: {{ $autoscaling.scaledownPeriod | default 300 }}
+    apiVersion: apps/v1
+  minReplicaCount: {{ $autoscaling.replicas.min | default 0 }}
+  maxReplicaCount: {{ $autoscaling.replicas.max | default 1 }}
+  cooldownPeriod: {{ $autoscaling.scaledownPeriod | default 300 }}
+  triggers:
+    - type: external-push
+      metadata:
+        scalerAddress: {{ $autoscaling.scalerAddress | default "keda-add-ons-http-external-scaler.keda:9090" | quote }}
+        interceptorRoute: {{ $name | quote }}
 ---
 {{- end }}
 {{- end }}

@@ -39,7 +39,7 @@ inference:
   resources: {}
   autoscaling:
     # Requires KEDA + KEDA HTTP add-on installed in the cluster.
-    # Every model uses a HTTPScaledObject and starts from replicas.min.
+    # Every model uses an InterceptorRoute + ScaledObject pair and starts from replicas.min.
     # Set replicas.min > 0 to keep a model warm.
     # Gateway model traffic is routed through interceptorProxyUrl so
     # requests queue and trigger scale-up from zero replicas.
@@ -48,6 +48,7 @@ inference:
       hosts: []
       pathPrefixes:
         - /v1
+      # Used as InterceptorRoute spec.scalingMetric.concurrency.targetValue.
       targetPendingRequests: 100
       scaledownPeriod: 300
       replicas:

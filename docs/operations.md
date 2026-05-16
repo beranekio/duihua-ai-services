@@ -34,7 +34,7 @@ kubectl get pods -n keda
 kubectl get crd | grep -E 'keda.sh|http.keda.sh'
 ```
 
-Expected CRDs include `scaledobjects.keda.sh` and `httpscaledobjects.http.keda.sh`.
+Expected CRDs include `scaledobjects.keda.sh` and `interceptorroutes.http.keda.sh`.
 
 ## AWS defaults (optional)
 

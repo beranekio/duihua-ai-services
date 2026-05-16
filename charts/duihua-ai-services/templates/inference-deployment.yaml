@@ -1,16 +1,24 @@
 {{- if .Values.inference.enabled }}
 {{- $fullName := include "duihua.fullname" . }}
+{{- $autoscalingEnabled := true }}
+{{- if hasKey .Values.inference.autoscaling "enabled" }}
+{{- $autoscalingEnabled = .Values.inference.autoscaling.enabled }}
+{{- end }}
 {{- range $index, $model := .Values.inference.models }}
 {{- $name := printf "%s-inference-%d" $fullName $index }}
 {{- $defaultAutoscaling := $.Values.inference.autoscaling.default | default dict }}
 {{- $modelAutoscaling := $model.autoscaling | default dict }}
 {{- $autoscaling := mergeOverwrite (deepCopy $defaultAutoscaling) $modelAutoscaling }}
+{{- $replicas := $.Values.inference.replicaCount | default 1 }}
+{{- if hasKey $model "replicaCount" }}
+{{- $replicas = $model.replicaCount }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: {{ $name }}
 spec:
-  replicas: {{ $autoscaling.replicas.min | default 0 }}
+  replicas: {{ if $autoscalingEnabled }}{{ $autoscaling.replicas.min | default 0 }}{{ else }}{{ $replicas }}{{ end }}
   selector:
     matchLabels:
       app: {{ $name }}
@@ -41,6 +49,7 @@ spec:
     - name: http
       port: 8000
       targetPort: 8000
+{{- if $autoscalingEnabled }}
 ---
 apiVersion: http.keda.sh/v1beta1
 kind: InterceptorRoute
@@ -94,5 +103,6 @@ spec:
         scalerAddress: {{ $autoscaling.scalerAddress | default "keda-add-ons-http-external-scaler.keda:9090" | quote }}
         interceptorRoute: {{ $name | quote }}
 ---
+{{- end }}
 {{- end }}
 {{- end }}

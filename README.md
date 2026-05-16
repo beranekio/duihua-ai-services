@@ -30,7 +30,31 @@ docker build -t ghcr.io/<org>/duihua-gateway:0.1.0 .
 docker push ghcr.io/<org>/duihua-gateway:0.1.0
 ```
 
-### 2) Deploy with Helm
+### 2) Local testing with kind
+
+For a local cluster test, the repo includes a `kind` workflow that deploys the Helm chart with a CPU `vLLM` model matching the Compose setup and exposes the gateway on `127.0.0.1:8080`.
+
+Prerequisites:
+
+```bash
+kind
+kubectl
+helm
+docker
+curl
+```
+
+Run:
+
+```bash
+./scripts/deploy-kind.sh
+curl http://127.0.0.1:8080/healthz
+curl http://127.0.0.1:8080/v1/models
+```
+
+This uses [kind/cluster.yaml](kind/cluster.yaml) and [charts/duihua-ai-services/values-kind.yaml](charts/duihua-ai-services/values-kind.yaml). It deploys `Qwen/Qwen3.5-0.8B` with `vllm/vllm-openai-cpu:latest`, so the first startup will download model weights and needs materially more CPU and memory than the smoke-only CI path.
+
+### 3) Deploy with Helm
 
 Install KEDA and the KEDA HTTP add-on first (one-time per cluster):
 
@@ -55,7 +79,7 @@ helm upgrade --install duihua charts/duihua-ai-services \
   --set gateway.image.tag=0.1.0
 ```
 
-### 3) Call the API
+### 4) Call the API
 
 ```bash
 kubectl port-forward svc/duihua-duihua-ai-services-gateway 8080:80

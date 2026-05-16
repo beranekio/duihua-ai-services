@@ -7,6 +7,7 @@ gateway:
   service:
     type: ClusterIP
     port: 80
+    nodePort:
   resources:
     requests:
       cpu: 250m
@@ -24,6 +25,7 @@ inference:
     repository: vllm/vllm-openai
     tag: latest
     pullPolicy: IfNotPresent
+  replicaCount: 1
   models:
     - name: google/gemma-4-31B-it
       autoscaling: {}
@@ -38,6 +40,7 @@ inference:
           nvidia.com/gpu: "1"
   resources: {}
   autoscaling:
+    enabled: true
     # Requires KEDA + KEDA HTTP add-on installed in the cluster.
     # Every model uses an InterceptorRoute + ScaledObject pair and starts from replicas.min.
     # Set replicas.min > 0 to keep a model warm.

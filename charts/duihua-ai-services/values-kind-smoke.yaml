@@ -1,0 +1,22 @@
+gateway:
+  image:
+    repository: duihua-gateway
+    tag: kind
+    pullPolicy: IfNotPresent
+  service:
+    type: NodePort
+    port: 80
+    nodePort: 30080
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+  env:
+    defaultModel: local-test-model
+    upstreamBaseUrl: http://127.0.0.1:9/v1
+
+inference:
+  enabled: false

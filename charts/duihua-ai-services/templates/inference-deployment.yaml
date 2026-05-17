@@ -2,9 +2,23 @@
 {{- $fullName := include "duihua.fullname" . }}
 {{- range $index, $model := .Values.inference.models }}
 {{- $name := printf "%s-inference-%d" $fullName $index }}
+{{- $proxyServiceName := printf "%s-proxy" $name }}
 {{- $defaultAutoscaling := $.Values.inference.autoscaling.default | default dict }}
 {{- $modelAutoscaling := $model.autoscaling | default dict }}
 {{- $autoscaling := mergeOverwrite (deepCopy $defaultAutoscaling) $modelAutoscaling }}
+{{- $baseArgs := list $model.name "--host" "0.0.0.0" "--port" "8000" }}
+{{- $globalExtraArgs := $.Values.inference.extraArgs | default list }}
+{{- $modelExtraArgs := $model.extraArgs | default list }}
+{{- $args := concat $baseArgs $globalExtraArgs $modelExtraArgs }}
+{{- $proxyUrl := $.Values.inference.autoscaling.interceptorProxyUrl | default "http://keda-add-ons-http-interceptor-proxy.keda.svc.cluster.local:8080" }}
+{{- $proxyUrlParts := urlParse $proxyUrl }}
+{{- $proxyHostPort := $proxyUrlParts.host | default "" }}
+{{- $proxyHost := (regexReplaceAll ":[0-9]+$" $proxyHostPort "") | default "keda-add-ons-http-interceptor-proxy.keda.svc.cluster.local" }}
+{{- $proxyPortMatch := regexFind ":[0-9]+$" $proxyHostPort | default "" }}
+{{- $proxyPort := (trimPrefix ":" $proxyPortMatch) | default "8080" }}
+{{- $defaultRouteHosts := list $proxyServiceName (printf "%s.%s.svc.cluster.local" $proxyServiceName $.Release.Namespace) }}
+{{- $configuredHosts := $autoscaling.hosts | default list }}
+{{- $routeHosts := concat $defaultRouteHosts $configuredHosts }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -23,11 +37,26 @@ spec:
         - name: vllm
           image: "{{ $.Values.inference.image.repository }}:{{ $.Values.inference.image.tag }}"
           imagePullPolicy: {{ $.Values.inference.image.pullPolicy }}
-          args: ["--model", {{ $model.name | quote }}, "--host", "0.0.0.0", "--port", "8000"]
+          args:
+{{- range $arg := $args }}
+            - {{ $arg | quote }}
+{{- end }}
           ports:
             - containerPort: 8000
           resources:
 {{ toYaml (default $.Values.inference.resources $model.resources) | indent 12 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $proxyServiceName }}
+spec:
+  type: ExternalName
+  externalName: {{ $proxyHost }}
+  ports:
+    - name: http
+      port: {{ $proxyPort | int }}
+      targetPort: {{ $proxyPort | int }}
 ---
 apiVersion: v1
 kind: Service
@@ -54,12 +83,11 @@ spec:
   target:
     service: {{ $name }}
     port: 8000
-  {{- $hosts := ($autoscaling.hosts | default list) }}
   rules:
     -
-      {{- if gt (len $hosts) 0 }}
+      {{- if gt (len $routeHosts) 0 }}
       hosts:
-      {{- range $host := $hosts }}
+      {{- range $host := $routeHosts }}
         - {{ $host | quote }}
       {{- end }}
       {{- end }}

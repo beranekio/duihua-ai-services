@@ -12,6 +12,7 @@ Duihua AI Services is an OpenAI API-compatible platform for serving open-source 
 
 - `services/gateway`: Rust gateway service.
 - `charts/duihua-ai-services`: Helm chart for full deployment.
+- `scripts/`: Local kind bootstrap and deployment helpers.
 - `docs/`: Operational guidance.
 
 ## Quick start
@@ -19,14 +20,7 @@ Duihua AI Services is an OpenAI API-compatible platform for serving open-source 
 ### 1) Build gateway image
 
 ```bash
-cd services/gateway
-cargo build --release
-```
-
-Build and publish a container image (example):
-
-```bash
-docker build -t ghcr.io/<org>/duihua-gateway:0.1.0 .
+docker build -t ghcr.io/<org>/duihua-gateway:0.1.0 services/gateway
 docker push ghcr.io/<org>/duihua-gateway:0.1.0
 ```
 
@@ -51,6 +45,8 @@ Then deploy Duihua:
 
 ```bash
 helm upgrade --install duihua charts/duihua-ai-services \
+  --namespace duihua \
+  --create-namespace \
   --set gateway.image.repository=ghcr.io/<org>/duihua-gateway \
   --set gateway.image.tag=0.1.0
 ```
@@ -58,7 +54,7 @@ helm upgrade --install duihua charts/duihua-ai-services \
 ### 3) Call the API
 
 ```bash
-kubectl port-forward svc/duihua-duihua-ai-services-gateway 8080:80
+kubectl port-forward -n duihua svc/duihua-duihua-ai-services-gateway 8080:80
 curl http://127.0.0.1:8080/v1/models
 ```
 
@@ -100,8 +96,8 @@ inference:
           - /v1/chat/completions
 ```
 
-The chart creates an `InterceptorRoute` and `ScaledObject` for every model and sets Deployment replicas to `autoscaling.replicas.min`.
-Gateway model upstreams are routed through the KEDA HTTP interceptor proxy (`inference.autoscaling.interceptorProxyUrl`) so scale-to-zero models cold-start correctly.
+The chart creates an `InterceptorRoute`, `ScaledObject`, and per-model proxy `Service` for every model and sets Deployment replicas to `autoscaling.replicas.min`.
+Gateway model upstreams are routed through those per-model proxy Services, which resolve to the shared KEDA HTTP interceptor proxy (`inference.autoscaling.interceptorProxyUrl`, typically `http://keda-add-ons-http-interceptor-proxy.keda.svc.cluster.local:8080`), so scale-to-zero models cold-start correctly without rewriting the `/v1/...` request path.
 
 If you need a model to stay warm, set its minimum replicas to `1` (or higher):
 
@@ -114,3 +110,45 @@ inference:
           min: 1
           max: 2
 ```
+
+## Local kind workflow scripts
+
+The `scripts/` directory includes helper scripts to stand up a local kind environment and deploy this chart end-to-end:
+
+```bash
+# 1) Create kind cluster
+scripts/create-kind-cluster.sh
+
+# 2) Install/upgrade KEDA and KEDA HTTP add-on
+scripts/install-keda.sh
+
+# 3) Build local gateway image and load it into kind
+scripts/build-and-load-images.sh
+
+# 4) Deploy Helm chart and verify rollout status
+scripts/deploy-kind.sh
+```
+
+Or run the full workflow:
+
+```bash
+scripts/kind-local-up.sh
+```
+
+By default, this creates a kind cluster named `duihua-local`, installs the chart into namespace `duihua`, enables the bundled CPU vLLM inference deployment, and exposes the gateway at `http://127.0.0.1:8080` via the kind port mapping in `kind/cluster.yaml`.
+
+```bash
+curl http://127.0.0.1:8080/healthz
+curl http://127.0.0.1:8080/v1/models
+```
+
+Useful environment variables:
+- `CLUSTER_NAME` (default: `duihua-local`)
+- `KIND_CONFIG` (default: `kind/cluster.yaml`)
+- `RELEASE_NAME` (default: `duihua`)
+- `NAMESPACE` (default: `duihua`)
+- `GATEWAY_IMAGE_REPO` (default: `duihua-gateway`)
+- `GATEWAY_IMAGE_TAG` (default: `local`)
+- `INFERENCE_ENABLED` (default: `true`)
+- `VALUES_FILE` (default: `charts/duihua-ai-services/values-kind.yaml`)
+- `KEDA_NAMESPACE` (default: `keda`)

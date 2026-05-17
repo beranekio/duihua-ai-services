@@ -18,6 +18,14 @@ spec:
           imagePullPolicy: {{ .Values.gateway.image.pullPolicy }}
           ports:
             - containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
           env:
             - name: BIND_ADDR
               value: "0.0.0.0:8080"
@@ -27,7 +35,7 @@ spec:
               value: {{ .Values.gateway.env.upstreamBaseUrl | quote }}
             - name: MODEL_UPSTREAMS
               {{- if .Values.inference.enabled }}
-              value: "{{- range $index, $model := .Values.inference.models }}{{ if $index }},{{ end }}{{ $model.name }}={{ $.Values.inference.autoscaling.interceptorProxyUrl }}/{{ include "duihua.fullname" $ }}-inference-{{ $index }}/v1{{- end }}"
+              value: "{{- range $index, $model := .Values.inference.models }}{{ if $index }},{{ end }}{{ $model.name }}=http://{{ include "duihua.fullname" $ }}-inference-{{ $index }}-proxy:8080/v1{{- end }}"
               {{- else }}
               value: ""
               {{- end }}

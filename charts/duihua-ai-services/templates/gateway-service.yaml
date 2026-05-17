@@ -11,3 +11,6 @@ spec:
       targetPort: 8080
       protocol: TCP
       name: http
+      {{- if and (or (eq .Values.gateway.service.type "NodePort") (eq .Values.gateway.service.type "LoadBalancer")) .Values.gateway.service.nodePort }}
+      nodePort: {{ .Values.gateway.service.nodePort }}
+      {{- end }}

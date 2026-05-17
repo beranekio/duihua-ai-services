@@ -114,3 +114,35 @@ inference:
           min: 1
           max: 2
 ```
+
+## Local kind workflow scripts
+
+The `scripts/` directory includes helper scripts to stand up a local kind environment and deploy this chart end-to-end:
+
+```bash
+# 1) Create kind cluster
+scripts/create-kind-cluster.sh
+
+# 2) Install/upgrade KEDA and KEDA HTTP add-on
+scripts/install-keda.sh
+
+# 3) Build local gateway image and load it into kind
+scripts/build-and-load-images.sh
+
+# 4) Deploy Helm chart and verify rollout status
+scripts/deploy-kind.sh
+```
+
+Or run the full workflow:
+
+```bash
+scripts/kind-local-up.sh
+```
+
+Useful environment variables:
+- `CLUSTER_NAME` (default: `duihua-local`)
+- `GATEWAY_IMAGE_REPO` (default: `duihua-gateway`)
+- `GATEWAY_IMAGE_TAG` (default: `local`)
+- `RELEASE_NAME` (default: `duihua`)
+- `NAMESPACE` (default: `default`)
+- `INFERENCE_ENABLED` (default: `false` for local kind)

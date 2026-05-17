@@ -25,10 +25,17 @@ kubectl rollout status deployment/"${RELEASE_NAME}"-duihua-ai-services-gateway -
 
 if [[ "${INFERENCE_ENABLED}" == "true" ]]; then
   echo "Checking rollout status for inference deployments..."
-  kubectl get deployment -n "${NAMESPACE}" -l app.kubernetes.io/instance="${RELEASE_NAME}",app.kubernetes.io/component=inference -o name \
-    | while read -r deployment; do
-        kubectl rollout status "${deployment}" -n "${NAMESPACE}" --timeout="${TIMEOUT}"
-      done
+  inference_deployments="$(kubectl get deployment -n "${NAMESPACE}" -o name \
+    | grep "^deployment.apps/${RELEASE_NAME}-duihua-ai-services-inference-" || true)"
+
+  if [[ -z "${inference_deployments}" ]]; then
+    echo "No inference deployments found for release '${RELEASE_NAME}' in namespace '${NAMESPACE}'." >&2
+    exit 1
+  fi
+
+  while read -r deployment; do
+    kubectl rollout status "${deployment}" -n "${NAMESPACE}" --timeout="${TIMEOUT}"
+  done <<< "${inference_deployments}"
 fi
 
 echo "Deployment checks complete."

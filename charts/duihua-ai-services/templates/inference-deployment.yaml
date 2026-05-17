@@ -12,8 +12,10 @@
 {{- $args := concat $baseArgs $globalExtraArgs $modelExtraArgs }}
 {{- $proxyUrl := $.Values.inference.autoscaling.interceptorProxyUrl | default "http://keda-add-ons-http-interceptor-proxy.keda.svc.cluster.local:8080" }}
 {{- $proxyUrlParts := urlParse $proxyUrl }}
-{{- $proxyHost := $proxyUrlParts.hostname | default "keda-add-ons-http-interceptor-proxy.keda.svc.cluster.local" }}
-{{- $proxyPort := $proxyUrlParts.port | default "8080" }}
+{{- $proxyHostPort := $proxyUrlParts.host | default "" }}
+{{- $proxyHost := (regexReplaceAll ":[0-9]+$" $proxyHostPort "") | default "keda-add-ons-http-interceptor-proxy.keda.svc.cluster.local" }}
+{{- $proxyPortMatch := regexFind ":[0-9]+$" $proxyHostPort | default "" }}
+{{- $proxyPort := (trimPrefix ":" $proxyPortMatch) | default "8080" }}
 {{- $defaultRouteHosts := list $proxyServiceName (printf "%s.%s.svc.cluster.local" $proxyServiceName $.Release.Namespace) }}
 {{- $configuredHosts := $autoscaling.hosts | default list }}
 {{- $routeHosts := concat $defaultRouteHosts $configuredHosts }}

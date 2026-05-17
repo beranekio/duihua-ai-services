@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CLUSTER_NAME="${CLUSTER_NAME:-duihua-local}"
-KIND_CONFIG="${KIND_CONFIG:-}"
+KIND_CONFIG="${KIND_CONFIG:-$ROOT_DIR/kind/cluster.yaml}"
 
 if ! command -v kind >/dev/null 2>&1; then
   echo "kind is required but not installed." >&2

@@ -1,18 +1,21 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RELEASE_NAME="${RELEASE_NAME:-duihua}"
-NAMESPACE="${NAMESPACE:-default}"
-CHART_PATH="${CHART_PATH:-charts/duihua-ai-services}"
+NAMESPACE="${NAMESPACE:-duihua}"
+CHART_PATH="${CHART_PATH:-$ROOT_DIR/charts/duihua-ai-services}"
+VALUES_FILE="${VALUES_FILE:-$ROOT_DIR/charts/duihua-ai-services/values-kind.yaml}"
 GATEWAY_IMAGE_REPO="${GATEWAY_IMAGE_REPO:-duihua-gateway}"
 GATEWAY_IMAGE_TAG="${GATEWAY_IMAGE_TAG:-local}"
-INFERENCE_ENABLED="${INFERENCE_ENABLED:-false}"
+INFERENCE_ENABLED="${INFERENCE_ENABLED:-true}"
 TIMEOUT="${TIMEOUT:-300s}"
 
 echo "Deploying Helm release '${RELEASE_NAME}' into namespace '${NAMESPACE}'..."
 helm upgrade --install "${RELEASE_NAME}" "${CHART_PATH}" \
   --namespace "${NAMESPACE}" \
   --create-namespace \
+  -f "${VALUES_FILE}" \
   --set gateway.image.repository="${GATEWAY_IMAGE_REPO}" \
   --set gateway.image.tag="${GATEWAY_IMAGE_TAG}" \
   --set inference.enabled="${INFERENCE_ENABLED}"

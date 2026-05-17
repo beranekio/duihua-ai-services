@@ -32,4 +32,4 @@ helm upgrade --install keda-add-ons-http kedacore/keda-add-ons-http \
 
 kubectl rollout status deployment/keda-operator -n "${KEDA_NAMESPACE}" --timeout=180s
 kubectl rollout status deployment/keda-add-ons-http-interceptor -n "${KEDA_NAMESPACE}" --timeout=180s
-kubectl rollout status deployment/keda-add-ons-http-operator -n "${KEDA_NAMESPACE}" --timeout=180s
+# kubectl rollout status deployment/keda-add-ons-http-operator -n "${KEDA_NAMESPACE}" --timeout=180s

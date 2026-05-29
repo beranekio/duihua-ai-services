@@ -44,6 +44,8 @@ inference:
           memory: 16Gi
           nvidia.com/gpu: "1"
   resources: {}
+  responsesApiStore:
+    enabled: false
   autoscaling:
     # Requires KEDA + KEDA HTTP add-on installed in the cluster.
     # Every model uses an InterceptorRoute + ScaledObject pair and starts from replicas.min.
@@ -69,7 +71,7 @@ inference:
       annotations: {}
 
 valkey:
-  enabled: true
+  enabled: false
   image:
     repository: valkey/valkey
     tag: "8.0-alpine"

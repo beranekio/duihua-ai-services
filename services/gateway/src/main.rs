@@ -30,7 +30,8 @@ struct AppState {
     default_model: String,
     upstream_api_key: Option<String>,
     client: Client,
-    response_store: ResponseStore,
+    responses_api_store_enabled: bool,
+    response_store: Option<ResponseStore>,
 }
 
 #[derive(Clone)]
@@ -38,6 +39,35 @@ struct ResponseStore {
     connection: redis::aio::MultiplexedConnection,
     key_prefix: String,
     ttl_seconds: u64,
+}
+
+#[derive(Serialize)]
+struct ErrorResponse {
+    error: ErrorBody,
+}
+
+#[derive(Serialize)]
+struct ErrorBody {
+    message: String,
+    #[serde(rename = "type")]
+    error_type: &'static str,
+    param: &'static str,
+    code: u16,
+}
+
+fn response_not_found(response_id: &str) -> Response {
+    (
+        StatusCode::NOT_FOUND,
+        Json(ErrorResponse {
+            error: ErrorBody {
+                message: format!("Response with id '{response_id}' not found."),
+                error_type: "invalid_request_error",
+                param: "response_id",
+                code: 404,
+            },
+        }),
+    )
+        .into_response()
 }
 
 #[derive(Serialize)]
@@ -91,7 +121,12 @@ async fn main() -> Result<()> {
         env::var("DEFAULT_MODEL").unwrap_or_else(|_| "google/gemma-4-31B-it".to_string());
     let upstream_api_key = env::var("UPSTREAM_API_KEY").ok();
     let model_upstreams = parse_model_upstreams(env::var("MODEL_UPSTREAMS").ok());
-    let response_store = response_store_from_env().await?;
+    let responses_api_store_enabled = parse_bool_env("RESPONSES_API_STORE_ENABLED", false);
+    let response_store = if responses_api_store_enabled {
+        Some(response_store_from_env().await?)
+    } else {
+        None
+    };
 
     let state = Arc::new(AppState {
         upstream_base,
@@ -99,6 +134,7 @@ async fn main() -> Result<()> {
         default_model,
         upstream_api_key,
         client: Client::new(),
+        responses_api_store_enabled,
         response_store,
     });
 
@@ -153,6 +189,17 @@ async fn response_store_from_env() -> Result<ResponseStore> {
         key_prefix,
         ttl_seconds,
     })
+}
+
+fn parse_bool_env(name: &str, default: bool) -> bool {
+    env::var(name)
+        .ok()
+        .and_then(|value| match value.to_ascii_lowercase().as_str() {
+            "1" | "true" | "yes" | "on" => Some(true),
+            "0" | "false" | "no" | "off" => Some(false),
+            _ => None,
+        })
+        .unwrap_or(default)
 }
 
 fn parse_model_upstreams(value: Option<String>) -> HashMap<String, String> {
@@ -276,7 +323,10 @@ async fn get_response(
     uri: Uri,
     Path(response_id): Path<String>,
 ) -> Response {
-    let upstream = response_upstream(state.as_ref(), &response_id).await;
+    let upstream = match response_upstream(state.as_ref(), &response_id).await {
+        Ok(upstream) => upstream,
+        Err(response) => return response,
+    };
 
     proxy_get(
         state.as_ref(),
@@ -292,7 +342,10 @@ async fn delete_response(
     headers: HeaderMap,
     Path(response_id): Path<String>,
 ) -> Response {
-    let upstream = response_upstream(state.as_ref(), &response_id).await;
+    let upstream = match response_upstream(state.as_ref(), &response_id).await {
+        Ok(upstream) => upstream,
+        Err(response) => return response,
+    };
 
     proxy_delete(
         state.as_ref(),
@@ -308,7 +361,10 @@ async fn cancel_response(
     headers: HeaderMap,
     Path(response_id): Path<String>,
 ) -> Response {
-    let upstream = response_upstream(state.as_ref(), &response_id).await;
+    let upstream = match response_upstream(state.as_ref(), &response_id).await {
+        Ok(upstream) => upstream,
+        Err(response) => return response,
+    };
 
     proxy_post_empty(
         state.as_ref(),
@@ -325,7 +381,10 @@ async fn list_response_input_items(
     uri: Uri,
     Path(response_id): Path<String>,
 ) -> Response {
-    let upstream = response_upstream(state.as_ref(), &response_id).await;
+    let upstream = match response_upstream(state.as_ref(), &response_id).await {
+        Ok(upstream) => upstream,
+        Err(response) => return response,
+    };
 
     proxy_get(
         state.as_ref(),
@@ -364,13 +423,25 @@ fn upstream_for_model<'a>(state: &'a AppState, model: &str) -> &'a str {
         .unwrap_or(state.upstream_base.as_str())
 }
 
-async fn response_upstream(state: &AppState, response_id: &str) -> String {
-    match state.response_store.load(response_id).await {
-        Ok(Some(upstream)) => upstream,
-        Ok(None) => upstream_for_model(state, &state.default_model).to_string(),
+async fn response_upstream(
+    state: &AppState,
+    response_id: &str,
+) -> std::result::Result<String, Response> {
+    if !state.responses_api_store_enabled {
+        return Err(response_not_found(response_id));
+    }
+
+    let Some(response_store) = &state.response_store else {
+        error!("responses API store is enabled but no response store is configured");
+        return Err((StatusCode::BAD_GATEWAY, "response id store unavailable").into_response());
+    };
+
+    match response_store.load(response_id).await {
+        Ok(Some(upstream)) => Ok(upstream),
+        Ok(None) => Err(response_not_found(response_id)),
         Err(e) => {
             error!("failed to read response id store for {response_id}: {e}");
-            upstream_for_model(state, &state.default_model).to_string()
+            Err((StatusCode::BAD_GATEWAY, "response id store read failed").into_response())
         }
     }
 }
@@ -514,7 +585,16 @@ async fn track_response_id_from_json(state: &AppState, upstream: &str, body: &[u
 }
 
 async fn store_response_upstream(state: &AppState, response_id: String, upstream: String) {
-    if let Err(e) = state.response_store.store(&response_id, &upstream).await {
+    if !state.responses_api_store_enabled {
+        return;
+    }
+
+    let Some(response_store) = &state.response_store else {
+        error!("responses API store is enabled but no response store is configured");
+        return;
+    };
+
+    if let Err(e) = response_store.store(&response_id, &upstream).await {
         error!("failed to store upstream for response {response_id}: {e}");
     }
 }
@@ -685,5 +765,15 @@ mod tests {
             response_store_key("duihua:responses", "resp_model_a"),
             "duihua:responses:resp_model_a"
         );
+    }
+
+    #[test]
+    fn parses_bool_env_values() {
+        env::set_var("DUIHUA_TEST_BOOL", "true");
+        assert!(parse_bool_env("DUIHUA_TEST_BOOL", false));
+        env::set_var("DUIHUA_TEST_BOOL", "0");
+        assert!(!parse_bool_env("DUIHUA_TEST_BOOL", true));
+        env::remove_var("DUIHUA_TEST_BOOL");
+        assert!(parse_bool_env("DUIHUA_TEST_BOOL", true));
     }
 }

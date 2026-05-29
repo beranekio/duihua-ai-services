@@ -41,6 +41,11 @@ spec:
 {{- range $arg := $args }}
             - {{ $arg | quote }}
 {{- end }}
+          {{ if $.Values.inference.responsesApiStore.enabled }}
+          env:
+            - name: VLLM_ENABLE_RESPONSES_API_STORE
+              value: "1"
+          {{ end }}
           ports:
             - containerPort: 8000
           resources:

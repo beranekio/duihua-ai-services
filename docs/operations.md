@@ -49,4 +49,6 @@ If running on AWS EKS:
 
 The gateway stores Responses API `response_id` to upstream routing metadata in a Valkey/Redis-compatible store. This is required because follow-up Responses API calls use only `{response_id}` and must be sent back to the same model deployment that created the response.
 
-The Helm chart deploys Valkey by default. For production, consider setting `valkey.enabled=false` and pointing `gateway.env.responseIdStoreUrl` at an externally managed, highly available Valkey/Redis-compatible service. Tune `gateway.env.responseIdStoreTtlSeconds` to match how long clients may use stored Responses API ids.
+This feature is disabled by default. Enable `inference.responsesApiStore.enabled=true` to set `VLLM_ENABLE_RESPONSES_API_STORE=1` on vLLM and to make the gateway use the response-id store for follow-up routing. If the feature is disabled, the gateway returns the vLLM-compatible `response_id` not-found error for follow-up requests and does not forward them to inference deployments.
+
+For production, consider using an externally managed, highly available Valkey/Redis-compatible service by keeping `valkey.enabled=false` and pointing `gateway.env.responseIdStoreUrl` at that service. Tune `gateway.env.responseIdStoreTtlSeconds` to match how long clients may use stored Responses API ids.

@@ -67,15 +67,25 @@ curl http://127.0.0.1:8080/v1/responses \
 
 The Responses API returns `resp_*` identifiers that later calls use without repeating the model name. The gateway stores `response_id` to upstream mappings in Valkey-compatible Redis storage so follow-up retrieval, cancellation, deletion, and input item requests route to the same deployment that created the response.
 
-The Helm chart deploys an in-cluster Valkey instance by default (`valkey.enabled=true`) and wires the gateway automatically. To use an external Valkey/Redis-compatible service instead, set `valkey.enabled=false` and configure:
+Response-id persistence is optional and disabled by default. When disabled, follow-up `{response_id}` requests return the same not-found error shape as vLLM instead of being forwarded to an inference deployment.
+
+To enable it with the chart-managed Valkey instance, configure both the vLLM response store and Valkey:
 
 ```yaml
+inference:
+  responsesApiStore:
+    enabled: true
+valkey:
+  enabled: true
 gateway:
   env:
-    responseIdStoreUrl: redis://my-valkey.example:6379
     responseIdStoreKeyPrefix: duihua:responses
     responseIdStoreTtlSeconds: "86400"
 ```
+
+To use an external Valkey/Redis-compatible service instead, keep `valkey.enabled=false` and set `gateway.env.responseIdStoreUrl`.
+
+For local Docker Compose, set `RESPONSES_API_STORE_ENABLED=true` and `VLLM_ENABLE_RESPONSES_API_STORE=1` when starting the stack to exercise follow-up Responses API calls.
 
 ## Cloud-provider independence
 

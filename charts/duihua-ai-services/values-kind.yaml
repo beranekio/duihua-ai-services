@@ -29,6 +29,8 @@ inference:
     pullPolicy: IfNotPresent
   # Additional arguments appended to every vLLM inference container.
   extraArgs: []
+  responsesApiStore:
+    enabled: false
   models:
     - name: HuggingFaceTB/SmolLM2-135M-Instruct
       # Additional arguments appended only for this model's vLLM container.
@@ -67,7 +69,7 @@ inference:
       annotations: {}
 
 valkey:
-  enabled: true
+  enabled: false
   image:
     repository: valkey/valkey
     tag: "8.0-alpine"

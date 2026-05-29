@@ -15,6 +15,9 @@ gateway:
       cpu: 500m
       memory: 256Mi
   env:
+    responseIdStoreUrl: redis://valkey:6379
+    responseIdStoreKeyPrefix: duihua:responses
+    responseIdStoreTtlSeconds: "86400"
     defaultModel: HuggingFaceTB/SmolLM2-135M-Instruct
     upstreamBaseUrl: http://127.0.0.1:9/v1
 
@@ -26,6 +29,8 @@ inference:
     pullPolicy: IfNotPresent
   # Additional arguments appended to every vLLM inference container.
   extraArgs: []
+  responsesApiStore:
+    enabled: false
   models:
     - name: HuggingFaceTB/SmolLM2-135M-Instruct
       # Additional arguments appended only for this model's vLLM container.
@@ -62,3 +67,19 @@ inference:
         # HTTP add-on. This annotation lets you override the default.
       scaledObjectAnnotations: {}
       annotations: {}
+
+valkey:
+  enabled: false
+  image:
+    repository: valkey/valkey
+    tag: "9.1.0-alpine"
+    pullPolicy: IfNotPresent
+  service:
+    port: 6379
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 250m
+      memory: 256Mi

@@ -15,6 +15,9 @@ gateway:
       cpu: 1000m
       memory: 1Gi
   env:
+    responseIdStoreUrl: redis://valkey:6379
+    responseIdStoreKeyPrefix: duihua:responses
+    responseIdStoreTtlSeconds: "86400"
     defaultModel: google/gemma-4-31B-it
     upstreamBaseUrl: http://vllm:8000/v1
 
@@ -41,6 +44,13 @@ inference:
           memory: 16Gi
           nvidia.com/gpu: "1"
   resources: {}
+  responsesApiStore:
+    # vLLM stores Responses API state in process memory. When enabled, every
+    # model must keep exactly one inference replica (autoscaling.replicas.min >= 1
+    # and autoscaling.replicas.max <= 1) so follow-up resp_* requests cannot
+    # be load-balanced to a different replica or lose in-memory state after
+    # scale-down.
+    enabled: false
   autoscaling:
     # Requires KEDA + KEDA HTTP add-on installed in the cluster.
     # Every model uses an InterceptorRoute + ScaledObject pair and starts from replicas.min.
@@ -64,6 +74,22 @@ inference:
         # HTTP add-on. This annotation lets you override the default.
       scaledObjectAnnotations: {}
       annotations: {}
+
+valkey:
+  enabled: false
+  image:
+    repository: valkey/valkey
+    tag: "9.1.0-alpine"
+    pullPolicy: IfNotPresent
+  service:
+    port: 6379
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 250m
+      memory: 256Mi
 
 serviceAccount:
   create: true

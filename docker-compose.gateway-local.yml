@@ -6,11 +6,32 @@ services:
       BIND_ADDR: 0.0.0.0:8080
       UPSTREAM_BASE_URL: http://vllm:8000/v1
       DEFAULT_MODEL: Qwen/Qwen3.5-0.8B
+      RESPONSES_API_STORE_ENABLED: ${RESPONSES_API_STORE_ENABLED:-false}
+      RESPONSE_ID_STORE_URL: redis://valkey:6379
+      RESPONSE_ID_STORE_KEY_PREFIX: duihua:responses
+      RESPONSE_ID_STORE_TTL_SECONDS: "86400"
     ports:
       - "8080:8080"
     depends_on:
+      valkey:
+        condition: service_healthy
       vllm:
         condition: service_started
+
+  valkey:
+    image: valkey/valkey:9.1.0-alpine
+    command:
+      - --save
+      - ""
+      - --appendonly
+      - "no"
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
 
   vllm:
     image: vllm/vllm-openai-cpu:latest
@@ -29,6 +50,7 @@ services:
       - --gpu-memory-utilization
       - "0.6"
     environment:
+      VLLM_ENABLE_RESPONSES_API_STORE: ${VLLM_ENABLE_RESPONSES_API_STORE:-0}
       # Set this in your shell if the model pull requires authentication.
       HUGGING_FACE_HUB_TOKEN: ${HUGGING_FACE_HUB_TOKEN:-}
     ports:

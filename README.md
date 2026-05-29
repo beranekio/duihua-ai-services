@@ -4,7 +4,7 @@ Duihua AI Services is an OpenAI API-compatible platform for serving open-source 
 
 ## Architecture
 
-- **Gateway (Rust, Axum)**: Provides OpenAI-compatible endpoints (`/v1/models`, `/v1/chat/completions`, `/v1/embeddings`) and proxies requests to a model runtime.
+- **Gateway (Rust, Axum)**: Provides OpenAI-compatible endpoints (`/v1/models`, `/v1/chat/completions`, `/v1/responses`, `/v1/embeddings`) and proxies requests to a model runtime.
 - **Inference runtime**: Optional bundled `vllm/vllm-openai` deployment for OSS model hosting.
 - **Kubernetes-first deployment**: Packaged as a cloud-provider-neutral Helm chart.
 
@@ -56,6 +56,10 @@ helm upgrade --install duihua charts/duihua-ai-services \
 ```bash
 kubectl port-forward -n duihua svc/duihua-duihua-ai-services-gateway 8080:80
 curl http://127.0.0.1:8080/v1/models
+
+curl http://127.0.0.1:8080/v1/responses \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"google/gemma-4-31B-it","input":"Write one sentence about Kubernetes."}'
 ```
 
 ## Cloud-provider independence
@@ -140,6 +144,9 @@ By default, this creates a kind cluster named `duihua-local`, installs the chart
 ```bash
 curl http://127.0.0.1:8080/healthz
 curl http://127.0.0.1:8080/v1/models
+curl http://127.0.0.1:8080/v1/responses \
+  -H 'Content-Type: application/json' \
+  -d '{"input":"Write one sentence about Kubernetes."}'
 ```
 
 Useful environment variables:

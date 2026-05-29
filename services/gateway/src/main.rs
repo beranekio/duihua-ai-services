@@ -3,8 +3,8 @@ use std::{collections::HashMap, env, sync::Arc};
 use anyhow::{Context, Result};
 use axum::{
     body::Body,
-    extract::State,
-    http::{HeaderMap, StatusCode},
+    extract::{Path, State},
+    http::{HeaderMap, StatusCode, Uri},
     response::{IntoResponse, Response},
     routing::{get, post},
     Json, Router,
@@ -53,6 +53,13 @@ struct EmbeddingsRequest {
     extra: Value,
 }
 
+#[derive(Deserialize, Serialize)]
+struct ResponsesRequest {
+    model: Option<String>,
+    #[serde(flatten)]
+    extra: Value,
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let env_filter =
@@ -81,7 +88,18 @@ async fn main() -> Result<()> {
         .route("/healthz", get(healthz))
         .route("/v1/models", get(list_models))
         .route("/v1/chat/completions", post(chat_completions))
+        .route("/v1/responses", post(responses))
+        .route("/v1/responses/input_tokens", post(response_input_tokens))
         .route("/v1/embeddings", post(embeddings))
+        .route(
+            "/v1/responses/{response_id}",
+            get(get_response).delete(delete_response),
+        )
+        .route("/v1/responses/{response_id}/cancel", post(cancel_response))
+        .route(
+            "/v1/responses/{response_id}/input_items",
+            get(list_response_input_items),
+        )
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
         .with_state(state);
@@ -151,10 +169,7 @@ async fn chat_completions(
         .unwrap_or(state.default_model.as_str())
         .to_string();
 
-    let upstream = state
-        .model_upstreams
-        .get(&selected_model)
-        .unwrap_or(&state.upstream_base);
+    let upstream = upstream_for_model(state.as_ref(), &selected_model);
 
     proxy_request(
         state.as_ref(),
@@ -162,6 +177,111 @@ async fn chat_completions(
         payload,
         upstream,
         "chat/completions",
+    )
+    .await
+}
+
+async fn responses(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(mut payload): Json<ResponsesRequest>,
+) -> Response {
+    if payload.model.is_none() {
+        payload.model = Some(state.default_model.clone());
+    }
+
+    let selected_model = payload
+        .model
+        .as_deref()
+        .unwrap_or(state.default_model.as_str())
+        .to_string();
+
+    let upstream = upstream_for_model(state.as_ref(), &selected_model);
+
+    proxy_request(state.as_ref(), headers, payload, upstream, "responses").await
+}
+
+async fn response_input_tokens(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(mut payload): Json<ResponsesRequest>,
+) -> Response {
+    if payload.model.is_none() {
+        payload.model = Some(state.default_model.clone());
+    }
+
+    let selected_model = payload
+        .model
+        .as_deref()
+        .unwrap_or(state.default_model.as_str())
+        .to_string();
+
+    let upstream = upstream_for_model(state.as_ref(), &selected_model);
+
+    proxy_request(
+        state.as_ref(),
+        headers,
+        payload,
+        upstream,
+        "responses/input_tokens",
+    )
+    .await
+}
+
+async fn get_response(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    uri: Uri,
+    Path(response_id): Path<String>,
+) -> Response {
+    proxy_get(
+        state.as_ref(),
+        headers,
+        default_upstream(state.as_ref()),
+        &endpoint_with_query(&format!("responses/{response_id}"), &uri),
+    )
+    .await
+}
+
+async fn delete_response(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(response_id): Path<String>,
+) -> Response {
+    proxy_delete(
+        state.as_ref(),
+        headers,
+        default_upstream(state.as_ref()),
+        &format!("responses/{response_id}"),
+    )
+    .await
+}
+
+async fn cancel_response(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(response_id): Path<String>,
+) -> Response {
+    proxy_post_empty(
+        state.as_ref(),
+        headers,
+        default_upstream(state.as_ref()),
+        &format!("responses/{response_id}/cancel"),
+    )
+    .await
+}
+
+async fn list_response_input_items(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    uri: Uri,
+    Path(response_id): Path<String>,
+) -> Response {
+    proxy_get(
+        state.as_ref(),
+        headers,
+        default_upstream(state.as_ref()),
+        &endpoint_with_query(&format!("responses/{response_id}/input_items"), &uri),
     )
     .await
 }
@@ -181,12 +301,21 @@ async fn embeddings(
         .unwrap_or(state.default_model.as_str())
         .to_string();
 
-    let upstream = state
-        .model_upstreams
-        .get(&selected_model)
-        .unwrap_or(&state.upstream_base);
+    let upstream = upstream_for_model(state.as_ref(), &selected_model);
 
     proxy_request(state.as_ref(), headers, payload, upstream, "embeddings").await
+}
+
+fn upstream_for_model<'a>(state: &'a AppState, model: &str) -> &'a str {
+    state
+        .model_upstreams
+        .get(model)
+        .map(String::as_str)
+        .unwrap_or(state.upstream_base.as_str())
+}
+
+fn default_upstream(state: &AppState) -> &str {
+    upstream_for_model(state, &state.default_model)
 }
 
 async fn proxy_request<T: Serialize>(
@@ -197,8 +326,59 @@ async fn proxy_request<T: Serialize>(
     endpoint: &str,
 ) -> Response {
     let url = format!("{}/{}", upstream, endpoint);
-    let mut req = state.client.post(&url).json(&payload);
+    let req = state.client.post(&url).json(&payload);
 
+    proxy_upstream(state, headers, req).await
+}
+
+async fn proxy_get(
+    state: &AppState,
+    headers: HeaderMap,
+    upstream: &str,
+    endpoint: &str,
+) -> Response {
+    let url = format!("{}/{}", upstream, endpoint);
+    let req = state.client.get(&url);
+
+    proxy_upstream(state, headers, req).await
+}
+
+async fn proxy_delete(
+    state: &AppState,
+    headers: HeaderMap,
+    upstream: &str,
+    endpoint: &str,
+) -> Response {
+    let url = format!("{}/{}", upstream, endpoint);
+    let req = state.client.delete(&url);
+
+    proxy_upstream(state, headers, req).await
+}
+
+async fn proxy_post_empty(
+    state: &AppState,
+    headers: HeaderMap,
+    upstream: &str,
+    endpoint: &str,
+) -> Response {
+    let url = format!("{}/{}", upstream, endpoint);
+    let req = state.client.post(&url);
+
+    proxy_upstream(state, headers, req).await
+}
+
+fn endpoint_with_query(endpoint: &str, uri: &Uri) -> String {
+    match uri.query() {
+        Some(query) => format!("{endpoint}?{query}"),
+        None => endpoint.to_string(),
+    }
+}
+
+async fn proxy_upstream(
+    state: &AppState,
+    headers: HeaderMap,
+    mut req: reqwest::RequestBuilder,
+) -> Response {
     if let Some(auth_header) = headers.get("authorization") {
         req = req.header("authorization", auth_header);
     } else if let Some(api_key) = &state.upstream_api_key {

@@ -46,8 +46,10 @@ inference:
   resources: {}
   responsesApiStore:
     # vLLM stores Responses API state in process memory. When enabled, every
-    # model must have autoscaling.replicas.min/max <= 1 so follow-up resp_*
-    # requests cannot be load-balanced to a different replica.
+    # model must keep exactly one inference replica (autoscaling.replicas.min >= 1
+    # and autoscaling.replicas.max <= 1) so follow-up resp_* requests cannot
+    # be load-balanced to a different replica or lose in-memory state after
+    # scale-down.
     enabled: false
   autoscaling:
     # Requires KEDA + KEDA HTTP add-on installed in the cluster.

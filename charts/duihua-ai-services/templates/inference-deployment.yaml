@@ -10,8 +10,8 @@
 {{- if and $.Values.inference.responsesApiStore.enabled (gt (int ($replicas.max | default 1)) 1) }}
 {{- fail (printf "inference.responsesApiStore.enabled requires %s autoscaling.replicas.max <= 1 because vLLM Responses API state is in-memory per replica" $model.name) }}
 {{- end }}
-{{- if and $.Values.inference.responsesApiStore.enabled (gt (int ($replicas.min | default 0)) 1) }}
-{{- fail (printf "inference.responsesApiStore.enabled requires %s autoscaling.replicas.min <= 1 because vLLM Responses API state is in-memory per replica" $model.name) }}
+{{- if and $.Values.inference.responsesApiStore.enabled (lt (int ($replicas.min | default 0)) 1) }}
+{{- fail (printf "inference.responsesApiStore.enabled requires %s autoscaling.replicas.min >= 1 because vLLM Responses API state is in-memory and must not scale to zero" $model.name) }}
 {{- end }}
 {{- $baseArgs := list $model.name "--host" "0.0.0.0" "--port" "8000" }}
 {{- $globalExtraArgs := $.Values.inference.extraArgs | default list }}

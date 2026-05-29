@@ -65,9 +65,9 @@ curl http://127.0.0.1:8080/v1/responses \
 
 ## Response id routing store
 
-The Responses API returns `resp_*` identifiers that later calls use without repeating the model name. The gateway stores `response_id` to upstream mappings in Valkey-compatible Redis storage so follow-up retrieval, cancellation, deletion, and input item requests route to the same deployment that created the response.
+The Responses API returns `resp_*` identifiers that later calls use without repeating the model name. The gateway stores `response_id` to upstream mappings in Valkey-compatible Redis storage so follow-up creation, retrieval, cancellation, deletion, and input item requests route to the same deployment that created the response.
 
-Response-id persistence is optional and disabled by default. When disabled, follow-up `{response_id}` requests return the same not-found error shape as vLLM instead of being forwarded to an inference deployment.
+Response-id persistence is optional and disabled by default. When disabled, follow-up `{response_id}` requests return the same not-found error shape as vLLM instead of being forwarded to an inference deployment. vLLM keeps Responses API state in process memory, so the chart rejects response-id persistence if any model is configured above one inference replica.
 
 To enable it with the chart-managed Valkey instance, configure both the vLLM response store and Valkey:
 

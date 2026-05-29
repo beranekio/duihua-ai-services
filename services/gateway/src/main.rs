@@ -101,7 +101,10 @@ struct EmbeddingsRequest {
 
 #[derive(Deserialize, Serialize)]
 struct ResponsesRequest {
+    #[serde(skip_serializing_if = "Option::is_none")]
     model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    previous_response_id: Option<String>,
     #[serde(flatten)]
     extra: Value,
 }
@@ -275,17 +278,24 @@ async fn responses(
     headers: HeaderMap,
     Json(mut payload): Json<ResponsesRequest>,
 ) -> Response {
-    if payload.model.is_none() {
-        payload.model = Some(state.default_model.clone());
-    }
+    let upstream = if let Some(previous_response_id) = payload.previous_response_id.as_deref() {
+        match response_upstream(state.as_ref(), previous_response_id).await {
+            Ok(upstream) => upstream,
+            Err(response) => return response,
+        }
+    } else {
+        if payload.model.is_none() {
+            payload.model = Some(state.default_model.clone());
+        }
 
-    let selected_model = payload
-        .model
-        .as_deref()
-        .unwrap_or(state.default_model.as_str())
-        .to_string();
+        let selected_model = payload
+            .model
+            .as_deref()
+            .unwrap_or(state.default_model.as_str())
+            .to_string();
 
-    let upstream = upstream_for_model(state.as_ref(), &selected_model).to_string();
+        upstream_for_model(state.as_ref(), &selected_model).to_string()
+    };
 
     proxy_response_request(state, headers, payload, upstream).await
 }
@@ -740,6 +750,18 @@ async fn proxy_upstream(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn deserializes_previous_response_id_without_model() {
+        let request = serde_json::from_value::<ResponsesRequest>(serde_json::json!({
+            "previous_response_id": "resp_prior",
+            "input": "continue"
+        }))
+        .expect("valid responses request");
+
+        assert_eq!(request.model, None);
+        assert_eq!(request.previous_response_id.as_deref(), Some("resp_prior"));
+    }
 
     #[test]
     fn extracts_response_id_from_response_objects() {

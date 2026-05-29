@@ -33,6 +33,16 @@ spec:
               value: {{ .Values.gateway.env.defaultModel | quote }}
             - name: UPSTREAM_BASE_URL
               value: {{ .Values.gateway.env.upstreamBaseUrl | quote }}
+            - name: RESPONSE_ID_STORE_URL
+              {{- if .Values.valkey.enabled }}
+              value: "redis://{{ include "duihua.fullname" . }}-valkey:{{ .Values.valkey.service.port }}"
+              {{- else }}
+              value: {{ .Values.gateway.env.responseIdStoreUrl | quote }}
+              {{- end }}
+            - name: RESPONSE_ID_STORE_KEY_PREFIX
+              value: {{ .Values.gateway.env.responseIdStoreKeyPrefix | quote }}
+            - name: RESPONSE_ID_STORE_TTL_SECONDS
+              value: {{ .Values.gateway.env.responseIdStoreTtlSeconds | quote }}
             - name: MODEL_UPSTREAMS
               {{- if .Values.inference.enabled }}
               value: "{{- range $index, $model := .Values.inference.models }}{{ if $index }},{{ end }}{{ $model.name }}=http://{{ include "duihua.fullname" $ }}-inference-{{ $index }}-proxy:8080/v1{{- end }}"

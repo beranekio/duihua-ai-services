@@ -7,8 +7,6 @@ use std::{
     },
 };
 
-use tokio::sync::RwLock;
-
 use anyhow::{Context, Result};
 use axum::{
     body::Body,
@@ -19,6 +17,7 @@ use axum::{
     Json, Router,
 };
 use futures_util::TryStreamExt;
+use redis::AsyncCommands;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -31,7 +30,14 @@ struct AppState {
     default_model: String,
     upstream_api_key: Option<String>,
     client: Client,
-    response_upstreams: RwLock<HashMap<String, String>>,
+    response_store: ResponseStore,
+}
+
+#[derive(Clone)]
+struct ResponseStore {
+    connection: redis::aio::MultiplexedConnection,
+    key_prefix: String,
+    ttl_seconds: u64,
 }
 
 #[derive(Serialize)]
@@ -85,6 +91,7 @@ async fn main() -> Result<()> {
         env::var("DEFAULT_MODEL").unwrap_or_else(|_| "google/gemma-4-31B-it".to_string());
     let upstream_api_key = env::var("UPSTREAM_API_KEY").ok();
     let model_upstreams = parse_model_upstreams(env::var("MODEL_UPSTREAMS").ok());
+    let response_store = response_store_from_env().await?;
 
     let state = Arc::new(AppState {
         upstream_base,
@@ -92,7 +99,7 @@ async fn main() -> Result<()> {
         default_model,
         upstream_api_key,
         client: Client::new(),
-        response_upstreams: RwLock::new(HashMap::new()),
+        response_store,
     });
 
     let app = Router::new()
@@ -122,6 +129,30 @@ async fn main() -> Result<()> {
 
     axum::serve(listener, app).await.context("server failure")?;
     Ok(())
+}
+
+async fn response_store_from_env() -> Result<ResponseStore> {
+    let url =
+        env::var("RESPONSE_ID_STORE_URL").unwrap_or_else(|_| "redis://valkey:6379".to_string());
+    let key_prefix =
+        env::var("RESPONSE_ID_STORE_KEY_PREFIX").unwrap_or_else(|_| "duihua:responses".to_string());
+    let ttl_seconds = env::var("RESPONSE_ID_STORE_TTL_SECONDS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(86_400);
+
+    let client = redis::Client::open(url.as_str())
+        .with_context(|| format!("invalid RESPONSE_ID_STORE_URL {url}"))?;
+    let connection = client
+        .get_multiplexed_async_connection()
+        .await
+        .with_context(|| format!("failed to connect to response id store at {url}"))?;
+
+    Ok(ResponseStore {
+        connection,
+        key_prefix,
+        ttl_seconds,
+    })
 }
 
 fn parse_model_upstreams(value: Option<String>) -> HashMap<String, String> {
@@ -334,13 +365,14 @@ fn upstream_for_model<'a>(state: &'a AppState, model: &str) -> &'a str {
 }
 
 async fn response_upstream(state: &AppState, response_id: &str) -> String {
-    state
-        .response_upstreams
-        .read()
-        .await
-        .get(response_id)
-        .cloned()
-        .unwrap_or_else(|| upstream_for_model(state, &state.default_model).to_string())
+    match state.response_store.load(response_id).await {
+        Ok(Some(upstream)) => upstream,
+        Ok(None) => upstream_for_model(state, &state.default_model).to_string(),
+        Err(e) => {
+            error!("failed to read response id store for {response_id}: {e}");
+            upstream_for_model(state, &state.default_model).to_string()
+        }
+    }
 }
 
 async fn proxy_response_request<T: Serialize>(
@@ -477,12 +509,36 @@ async fn track_response_id_from_json(state: &AppState, upstream: &str, body: &[u
     };
 
     if let Some(response_id) = response_id_from_value(&value) {
-        state
-            .response_upstreams
-            .write()
-            .await
-            .insert(response_id, upstream.to_string());
+        store_response_upstream(state, response_id, upstream.to_string()).await;
     }
+}
+
+async fn store_response_upstream(state: &AppState, response_id: String, upstream: String) {
+    if let Err(e) = state.response_store.store(&response_id, &upstream).await {
+        error!("failed to store upstream for response {response_id}: {e}");
+    }
+}
+
+impl ResponseStore {
+    async fn store(&self, response_id: &str, upstream: &str) -> redis::RedisResult<()> {
+        let mut connection = self.connection.clone();
+        connection
+            .set_ex(self.key(response_id), upstream, self.ttl_seconds)
+            .await
+    }
+
+    async fn load(&self, response_id: &str) -> redis::RedisResult<Option<String>> {
+        let mut connection = self.connection.clone();
+        connection.get(self.key(response_id)).await
+    }
+
+    fn key(&self, response_id: &str) -> String {
+        response_store_key(&self.key_prefix, response_id)
+    }
+}
+
+fn response_store_key(prefix: &str, response_id: &str) -> String {
+    format!("{prefix}:{response_id}")
 }
 
 fn response_id_from_value(value: &Value) -> Option<String> {
@@ -538,11 +594,7 @@ impl ResponseIdTracker {
             let state = Arc::clone(&self.state);
             let upstream = self.upstream.clone();
             tokio::spawn(async move {
-                state
-                    .response_upstreams
-                    .write()
-                    .await
-                    .insert(response_id, upstream);
+                store_response_upstream(state.as_ref(), response_id, upstream).await;
             });
         }
     }
@@ -627,31 +679,11 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn tracks_response_id_upstream_for_later_requests() {
-        let state = AppState {
-            upstream_base: "http://default.example/v1".to_string(),
-            model_upstreams: HashMap::new(),
-            default_model: "default-model".to_string(),
-            upstream_api_key: None,
-            client: Client::new(),
-            response_upstreams: RwLock::new(HashMap::new()),
-        };
-
-        track_response_id_from_json(
-            &state,
-            "http://model-a.example/v1",
-            br#"{"id":"resp_model_a","object":"response"}"#,
-        )
-        .await;
-
+    #[test]
+    fn builds_response_store_keys_with_prefix() {
         assert_eq!(
-            response_upstream(&state, "resp_model_a").await,
-            "http://model-a.example/v1"
-        );
-        assert_eq!(
-            response_upstream(&state, "resp_unknown").await,
-            "http://default.example/v1"
+            response_store_key("duihua:responses", "resp_model_a"),
+            "duihua:responses:resp_model_a"
         );
     }
 }

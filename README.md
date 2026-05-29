@@ -6,6 +6,7 @@ Duihua AI Services is an OpenAI API-compatible platform for serving open-source 
 
 - **Gateway (Rust, Axum)**: Provides OpenAI-compatible endpoints (`/v1/models`, `/v1/chat/completions`, `/v1/responses`, `/v1/embeddings`) and proxies requests to a model runtime.
 - **Inference runtime**: Optional bundled `vllm/vllm-openai` deployment for OSS model hosting.
+- **Response id store (Valkey)**: Persists Responses API `response_id` routing metadata so follow-up calls reach the same model deployment.
 - **Kubernetes-first deployment**: Packaged as a cloud-provider-neutral Helm chart.
 
 ## Repository layout
@@ -60,6 +61,20 @@ curl http://127.0.0.1:8080/v1/models
 curl http://127.0.0.1:8080/v1/responses \
   -H 'Content-Type: application/json' \
   -d '{"model":"google/gemma-4-31B-it","input":"Write one sentence about Kubernetes."}'
+```
+
+## Response id routing store
+
+The Responses API returns `resp_*` identifiers that later calls use without repeating the model name. The gateway stores `response_id` to upstream mappings in Valkey-compatible Redis storage so follow-up retrieval, cancellation, deletion, and input item requests route to the same deployment that created the response.
+
+The Helm chart deploys an in-cluster Valkey instance by default (`valkey.enabled=true`) and wires the gateway automatically. To use an external Valkey/Redis-compatible service instead, set `valkey.enabled=false` and configure:
+
+```yaml
+gateway:
+  env:
+    responseIdStoreUrl: redis://my-valkey.example:6379
+    responseIdStoreKeyPrefix: duihua:responses
+    responseIdStoreTtlSeconds: "86400"
 ```
 
 ## Cloud-provider independence

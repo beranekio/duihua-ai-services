@@ -760,10 +760,124 @@ mod tests {
     }
 
     #[test]
+    fn ignores_non_response_ids() {
+        let chat_completion = serde_json::json!({ "id": "chatcmpl_123" });
+        assert_eq!(response_id_from_value(&chat_completion), None);
+
+        let stream_event = serde_json::json!({
+            "type": "response.created",
+            "response": { "id": "not-a-response-id" }
+        });
+        assert_eq!(response_id_from_value(&stream_event), None);
+    }
+
+    #[test]
     fn builds_response_store_keys_with_prefix() {
         assert_eq!(
             response_store_key("duihua:responses", "resp_model_a"),
             "duihua:responses:resp_model_a"
+        );
+    }
+
+    #[test]
+    fn parses_model_upstreams() {
+        let upstreams = parse_model_upstreams(Some(
+            " model-a = http://model-a:8000/v1/,invalid,=missing-model,missing-upstream= ,\
+             model-b=https://model-b.example/v1/ "
+                .to_string(),
+        ));
+
+        assert_eq!(upstreams.len(), 2);
+        assert_eq!(
+            upstreams.get("model-a").map(String::as_str),
+            Some("http://model-a:8000/v1")
+        );
+        assert_eq!(
+            upstreams.get("model-b").map(String::as_str),
+            Some("https://model-b.example/v1")
+        );
+    }
+
+    #[test]
+    fn selects_model_specific_upstream_or_default() {
+        let state = AppState {
+            upstream_base: "http://default:8000/v1".to_string(),
+            model_upstreams: HashMap::from([(
+                "model-a".to_string(),
+                "http://model-a:8000/v1".to_string(),
+            )]),
+            default_model: "model-default".to_string(),
+            upstream_api_key: None,
+            client: Client::new(),
+            responses_api_store_enabled: false,
+            response_store: None,
+        };
+
+        assert_eq!(
+            upstream_for_model(&state, "model-a"),
+            "http://model-a:8000/v1"
+        );
+        assert_eq!(
+            upstream_for_model(&state, "model-b"),
+            "http://default:8000/v1"
+        );
+    }
+
+    #[test]
+    fn preserves_query_strings_for_response_subresources() {
+        let uri: Uri = "/v1/responses/resp_123/input_items?after=item_1&limit=20"
+            .parse()
+            .expect("valid uri");
+
+        assert_eq!(
+            endpoint_with_query("responses/resp_123/input_items", &uri),
+            "responses/resp_123/input_items?after=item_1&limit=20"
+        );
+
+        let uri: Uri = "/v1/responses/resp_123".parse().expect("valid uri");
+        assert_eq!(
+            endpoint_with_query("responses/resp_123", &uri),
+            "responses/resp_123"
+        );
+    }
+
+    #[test]
+    fn detects_event_stream_content_type() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "content-type",
+            "text/event-stream; charset=utf-8".parse().unwrap(),
+        );
+        assert!(is_event_stream(&headers));
+
+        headers.insert("content-type", "application/json".parse().unwrap());
+        assert!(!is_event_stream(&headers));
+    }
+
+    #[test]
+    fn extracts_streamed_response_id_across_chunks() {
+        let state = Arc::new(AppState {
+            upstream_base: "http://default:8000/v1".to_string(),
+            model_upstreams: HashMap::new(),
+            default_model: "model-default".to_string(),
+            upstream_api_key: None,
+            client: Client::new(),
+            responses_api_store_enabled: false,
+            response_store: None,
+        });
+        let tracker = ResponseIdTracker::new(state, "http://default:8000/v1".to_string());
+
+        assert_eq!(
+            tracker.find_response_id("data: {\"type\":\"response.created\","),
+            None
+        );
+        assert_eq!(
+            tracker
+                .find_response_id(
+                    "\"response\":{\"id\":\"resp_streamed\",\"object\":\"response\"}}\n"
+                )
+                .as_deref(),
+            Some("resp_streamed")
         );
     }
 

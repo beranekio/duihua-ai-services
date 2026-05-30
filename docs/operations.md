@@ -45,10 +45,12 @@ If running on AWS EKS:
 - Install NVIDIA device plugin.
 - Optionally use IRSA for pulling models from private S3 buckets.
 
-## Response id routing store
+## Responses API store
 
-The gateway stores Responses API `response_id` to upstream routing metadata in a Valkey/Redis-compatible store. This is required because follow-up Responses API calls use only `{response_id}` and must be sent back to the same model deployment that created the response. The same stored route is also used when `POST /v1/responses` continues a conversation with `previous_response_id`, including requests that omit `model`.
+The gateway can store completed Responses API objects and materialized conversation input in a Valkey/Redis-compatible store. This lets the gateway serve retrieval, deletion, and input-item requests without waking an inference deployment. For `POST /v1/responses` requests with `previous_response_id`, the gateway loads the saved conversation, appends the previous output and new input, removes `previous_response_id`, and sends a stateless request to the selected upstream model.
 
-This feature is disabled by default. Enable `inference.responsesApiStore.enabled=true` to set `VLLM_ENABLE_RESPONSES_API_STORE=1` on vLLM and to make the gateway use the response-id store for follow-up routing. If the feature is disabled, the gateway returns the vLLM-compatible `response_id` not-found error for follow-up requests and does not forward them to inference deployments. vLLM keeps Responses API state in memory inside each inference process, so the Helm chart requires every model to keep exactly one inference replica while response-id routing is enabled: `autoscaling.replicas.min >= 1` to prevent idle scale-down from losing stored state and `autoscaling.replicas.max <= 1` to prevent follow-up calls from being load-balanced to a different replica.
+Enable the gateway-owned store with `inference.responsesApiStore.enabled=true`. This setting does **not** set `VLLM_ENABLE_RESPONSES_API_STORE`: the implementation intentionally avoids vLLM's in-memory response store. Inference deployments may retain the default `autoscaling.replicas.min=0`, scale to zero while idle, and use more than one replica when configured.
 
-For production, consider using an externally managed, highly available Valkey/Redis-compatible service by keeping `valkey.enabled=false` and pointing `gateway.env.responseIdStoreUrl` at that service. Tune `gateway.env.responseIdStoreTtlSeconds` to match how long clients may use stored Responses API ids.
+The chart-managed Valkey deployment is suitable for development. For production, use an externally managed, highly available Valkey/Redis-compatible service by keeping `valkey.enabled=false` and pointing `gateway.env.responseIdStoreUrl` at that service. Tune `gateway.env.responseIdStoreTtlSeconds` to match how long clients may use stored Responses API ids.
+
+Streaming responses are saved once the gateway observes their `response.completed` event. Background responses are not currently supported by the gateway-owned store.

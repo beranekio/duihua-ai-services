@@ -45,11 +45,9 @@ inference:
           nvidia.com/gpu: "1"
   resources: {}
   responsesApiStore:
-    # vLLM stores Responses API state in process memory. When enabled, every
-    # model must keep exactly one inference replica (autoscaling.replicas.min >= 1
-    # and autoscaling.replicas.max <= 1) so follow-up resp_* requests cannot
-    # be load-balanced to a different replica or lose in-memory state after
-    # scale-down.
+    # Persist completed Responses API objects and conversation input in Valkey
+    # from the gateway. This does not enable vLLM's in-memory response store, so
+    # inference deployments may use multiple replicas and scale to zero.
     enabled: false
   autoscaling:
     # Requires KEDA + KEDA HTTP add-on installed in the cluster.

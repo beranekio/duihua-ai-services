@@ -50,7 +50,6 @@ services:
       - --gpu-memory-utilization
       - "0.6"
     environment:
-      VLLM_ENABLE_RESPONSES_API_STORE: ${VLLM_ENABLE_RESPONSES_API_STORE:-0}
       # Set this in your shell if the model pull requires authentication.
       HUGGING_FACE_HUB_TOKEN: ${HUGGING_FACE_HUB_TOKEN:-}
     ports:

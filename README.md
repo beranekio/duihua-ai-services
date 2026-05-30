@@ -6,7 +6,7 @@ Duihua AI Services is an OpenAI API-compatible platform for serving open-source 
 
 - **Gateway (Rust, Axum)**: Provides OpenAI-compatible endpoints (`/v1/models`, `/v1/chat/completions`, `/v1/responses`, `/v1/embeddings`) and proxies requests to a model runtime.
 - **Inference runtime**: Optional bundled `vllm/vllm-openai` deployment for OSS model hosting.
-- **Response id store (Valkey)**: Persists Responses API `response_id` routing metadata so follow-up calls reach the same model deployment.
+- **Responses API store (Valkey)**: Persists completed Responses API objects and conversation input so follow-up calls do not depend on inference runtime memory.
 - **Kubernetes-first deployment**: Packaged as a cloud-provider-neutral Helm chart.
 
 ## Repository layout
@@ -63,13 +63,13 @@ curl http://127.0.0.1:8080/v1/responses \
   -d '{"model":"google/gemma-4-31B-it","input":"Write one sentence about Kubernetes."}'
 ```
 
-## Response id routing store
+## Responses API store
 
-The Responses API returns `resp_*` identifiers that later calls use without repeating the model name. The gateway stores `response_id` to upstream mappings in Valkey-compatible Redis storage so follow-up creation, retrieval, cancellation, deletion, and input item requests route to the same deployment that created the response.
+The gateway can persist completed Responses API objects and their materialized conversation input in Valkey-compatible Redis storage. Follow-up creation requests with `previous_response_id` are expanded by the gateway into stateless upstream requests, while retrieval, deletion, and input-item requests are served directly from Valkey. The gateway does not enable or depend on vLLM's in-process Responses API store, so inference deployments can use multiple replicas and scale to zero between calls.
 
-Response-id persistence is optional and disabled by default. When disabled, follow-up `{response_id}` requests return the same not-found error shape as vLLM instead of being forwarded to an inference deployment. vLLM keeps Responses API state in process memory, so the chart rejects response-id persistence unless every model keeps exactly one inference replica (`autoscaling.replicas.min >= 1` and `autoscaling.replicas.max <= 1`).
+Response persistence is optional and disabled by default. When disabled, follow-up `{response_id}` requests return the same not-found error shape as vLLM instead of being forwarded to an inference deployment. Creation requests that explicitly set `store: false` are never persisted by the gateway.
 
-To enable it with the chart-managed Valkey instance, configure both the vLLM response store and Valkey:
+To enable it with the chart-managed Valkey instance:
 
 ```yaml
 inference:
@@ -78,7 +78,7 @@ inference:
   autoscaling:
     default:
       replicas:
-        min: 1
+        min: 0
         max: 1
 valkey:
   enabled: true
@@ -90,7 +90,7 @@ gateway:
 
 To use an external Valkey/Redis-compatible service instead, keep `valkey.enabled=false` and set `gateway.env.responseIdStoreUrl`.
 
-For local Docker Compose, set `RESPONSES_API_STORE_ENABLED=true` and `VLLM_ENABLE_RESPONSES_API_STORE=1` when starting the stack to exercise follow-up Responses API calls.
+For local Docker Compose, set `RESPONSES_API_STORE_ENABLED=true` when starting the stack to exercise persisted follow-up Responses API calls. Streaming responses are persisted after their `response.completed` event. Background responses are not currently supported by the gateway-owned store.
 
 ## Cloud-provider independence
 

@@ -20,7 +20,7 @@ use futures_util::TryStreamExt;
 use redis::AsyncCommands;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Value};
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 use tracing::{error, info};
 
@@ -39,6 +39,13 @@ struct ResponseStore {
     connection: redis::aio::MultiplexedConnection,
     key_prefix: String,
     ttl_seconds: u64,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+struct StoredResponse {
+    upstream: String,
+    response: Value,
+    input: Vec<Value>,
 }
 
 #[derive(Serialize)]
@@ -107,6 +114,47 @@ struct ResponsesRequest {
     previous_response_id: Option<String>,
     #[serde(flatten)]
     extra: Value,
+}
+
+fn request_input(request: &ResponsesRequest) -> Option<&Value> {
+    request.extra.get("input")
+}
+
+fn normalized_input(input: Option<&Value>) -> Vec<Value> {
+    match input {
+        Some(Value::Array(items)) => items.clone(),
+        Some(Value::String(text)) => vec![json!({"role": "user", "content": text})],
+        Some(input) if !input.is_null() => vec![input.clone()],
+        _ => Vec::new(),
+    }
+}
+
+fn continuation_input(previous: &StoredResponse, input: Option<&Value>) -> Vec<Value> {
+    let mut messages = previous.input.clone();
+    if let Some(output) = previous.response.get("output").and_then(Value::as_array) {
+        messages.extend(output.iter().cloned());
+    }
+    messages.extend(normalized_input(input));
+    messages
+}
+
+fn set_request_input(request: &mut ResponsesRequest, input: Vec<Value>) {
+    request.extra["input"] = Value::Array(input);
+}
+
+fn should_store_response(request: &ResponsesRequest) -> bool {
+    request.extra.get("store").and_then(Value::as_bool) != Some(false)
+}
+
+fn disable_upstream_response_store(request: &mut ResponsesRequest) {
+    request.extra["store"] = Value::Bool(false);
+}
+
+fn response_model(response: &Value) -> Option<String> {
+    response
+        .get("model")
+        .and_then(Value::as_str)
+        .map(str::to_string)
 }
 
 #[tokio::main]
@@ -278,26 +326,46 @@ async fn responses(
     headers: HeaderMap,
     Json(mut payload): Json<ResponsesRequest>,
 ) -> Response {
-    let upstream = if let Some(previous_response_id) = payload.previous_response_id.as_deref() {
-        match response_upstream(state.as_ref(), previous_response_id).await {
-            Ok(upstream) => upstream,
+    let persist_response = state.responses_api_store_enabled && should_store_response(&payload);
+    if persist_response && payload.extra.get("background").and_then(Value::as_bool) == Some(true) {
+        return (
+            StatusCode::NOT_IMPLEMENTED,
+            "background responses are not supported by the gateway-owned response store",
+        )
+            .into_response();
+    }
+
+    let (upstream, input) = if let Some(previous_response_id) = payload.previous_response_id.take()
+    {
+        let previous = match load_response(state.as_ref(), &previous_response_id).await {
+            Ok(previous) => previous,
             Err(response) => return response,
+        };
+        if payload.model.is_none() {
+            payload.model = response_model(&previous.response);
         }
+        let input = continuation_input(&previous, request_input(&payload));
+        set_request_input(&mut payload, input.clone());
+        (previous.upstream, input)
     } else {
         if payload.model.is_none() {
             payload.model = Some(state.default_model.clone());
         }
-
         let selected_model = payload
             .model
             .as_deref()
             .unwrap_or(state.default_model.as_str())
             .to_string();
-
-        upstream_for_model(state.as_ref(), &selected_model).to_string()
+        (
+            upstream_for_model(state.as_ref(), &selected_model).to_string(),
+            normalized_input(request_input(&payload)),
+        )
     };
 
-    proxy_response_request(state, headers, payload, upstream).await
+    if state.responses_api_store_enabled {
+        disable_upstream_response_store(&mut payload);
+    }
+    proxy_response_request(state, headers, payload, upstream, input, persist_response).await
 }
 
 async fn response_input_tokens(
@@ -305,23 +373,34 @@ async fn response_input_tokens(
     headers: HeaderMap,
     Json(mut payload): Json<ResponsesRequest>,
 ) -> Response {
-    if payload.model.is_none() {
-        payload.model = Some(state.default_model.clone());
-    }
-
-    let selected_model = payload
-        .model
-        .as_deref()
-        .unwrap_or(state.default_model.as_str())
-        .to_string();
-
-    let upstream = upstream_for_model(state.as_ref(), &selected_model);
+    let upstream = if let Some(previous_response_id) = payload.previous_response_id.take() {
+        let previous = match load_response(state.as_ref(), &previous_response_id).await {
+            Ok(previous) => previous,
+            Err(response) => return response,
+        };
+        if payload.model.is_none() {
+            payload.model = response_model(&previous.response);
+        }
+        let input = continuation_input(&previous, request_input(&payload));
+        set_request_input(&mut payload, input);
+        previous.upstream
+    } else {
+        if payload.model.is_none() {
+            payload.model = Some(state.default_model.clone());
+        }
+        let selected_model = payload
+            .model
+            .as_deref()
+            .unwrap_or(state.default_model.as_str())
+            .to_string();
+        upstream_for_model(state.as_ref(), &selected_model).to_string()
+    };
 
     proxy_request(
         state.as_ref(),
         headers,
         payload,
-        upstream,
+        &upstream,
         "responses/input_tokens",
     )
     .await
@@ -333,18 +412,11 @@ async fn get_response(
     uri: Uri,
     Path(response_id): Path<String>,
 ) -> Response {
-    let upstream = match response_upstream(state.as_ref(), &response_id).await {
-        Ok(upstream) => upstream,
-        Err(response) => return response,
-    };
-
-    proxy_get(
-        state.as_ref(),
-        headers,
-        &upstream,
-        &endpoint_with_query(&format!("responses/{response_id}"), &uri),
-    )
-    .await
+    let _ = (headers, uri);
+    match load_response(state.as_ref(), &response_id).await {
+        Ok(stored) => Json(stored.response).into_response(),
+        Err(response) => response,
+    }
 }
 
 async fn delete_response(
@@ -352,18 +424,18 @@ async fn delete_response(
     headers: HeaderMap,
     Path(response_id): Path<String>,
 ) -> Response {
-    let upstream = match response_upstream(state.as_ref(), &response_id).await {
-        Ok(upstream) => upstream,
+    let _ = headers;
+    let _stored = match load_response(state.as_ref(), &response_id).await {
+        Ok(stored) => stored,
         Err(response) => return response,
     };
-
-    proxy_delete(
-        state.as_ref(),
-        headers,
-        &upstream,
-        &format!("responses/{response_id}"),
-    )
-    .await
+    if let Some(response_store) = &state.response_store {
+        if let Err(e) = response_store.delete(&response_id).await {
+            error!("failed to delete response {response_id}: {e}");
+            return (StatusCode::BAD_GATEWAY, "response store delete failed").into_response();
+        }
+    }
+    Json(json!({"id": response_id, "object": "response.deleted", "deleted": true})).into_response()
 }
 
 async fn cancel_response(
@@ -371,18 +443,22 @@ async fn cancel_response(
     headers: HeaderMap,
     Path(response_id): Path<String>,
 ) -> Response {
-    let upstream = match response_upstream(state.as_ref(), &response_id).await {
-        Ok(upstream) => upstream,
+    let _ = headers;
+    let stored = match load_response(state.as_ref(), &response_id).await {
+        Ok(stored) => stored,
         Err(response) => return response,
     };
-
-    proxy_post_empty(
-        state.as_ref(),
-        headers,
-        &upstream,
-        &format!("responses/{response_id}/cancel"),
+    if stored.response.get("status").and_then(Value::as_str) == Some("completed") {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": {"message": "Cannot cancel a synchronous response.", "type": "invalid_request_error", "param": "response_id", "code": 400}})),
+        ).into_response();
+    }
+    (
+        StatusCode::NOT_IMPLEMENTED,
+        "cancelling stored background responses is not supported",
     )
-    .await
+        .into_response()
 }
 
 async fn list_response_input_items(
@@ -391,18 +467,13 @@ async fn list_response_input_items(
     uri: Uri,
     Path(response_id): Path<String>,
 ) -> Response {
-    let upstream = match response_upstream(state.as_ref(), &response_id).await {
-        Ok(upstream) => upstream,
-        Err(response) => return response,
-    };
-
-    proxy_get(
-        state.as_ref(),
-        headers,
-        &upstream,
-        &endpoint_with_query(&format!("responses/{response_id}/input_items"), &uri),
-    )
-    .await
+    let _ = (headers, uri);
+    match load_response(state.as_ref(), &response_id).await {
+        Ok(stored) => {
+            Json(json!({"object": "list", "data": stored.input, "has_more": false})).into_response()
+        }
+        Err(response) => response,
+    }
 }
 
 async fn embeddings(
@@ -433,10 +504,10 @@ fn upstream_for_model<'a>(state: &'a AppState, model: &str) -> &'a str {
         .unwrap_or(state.upstream_base.as_str())
 }
 
-async fn response_upstream(
+async fn load_response(
     state: &AppState,
     response_id: &str,
-) -> std::result::Result<String, Response> {
+) -> std::result::Result<StoredResponse, Response> {
     if !state.responses_api_store_enabled {
         return Err(response_not_found(response_id));
     }
@@ -447,7 +518,7 @@ async fn response_upstream(
     };
 
     match response_store.load(response_id).await {
-        Ok(Some(upstream)) => Ok(upstream),
+        Ok(Some(response)) => Ok(response),
         Ok(None) => Err(response_not_found(response_id)),
         Err(e) => {
             error!("failed to read response id store for {response_id}: {e}");
@@ -461,11 +532,13 @@ async fn proxy_response_request<T: Serialize>(
     headers: HeaderMap,
     payload: T,
     upstream: String,
+    input: Vec<Value>,
+    persist_response: bool,
 ) -> Response {
     let url = format!("{upstream}/responses");
     let req = state.client.post(&url).json(&payload);
 
-    proxy_upstream_tracking_response_id(state, headers, req, upstream).await
+    proxy_upstream_tracking_response(state, headers, req, upstream, input, persist_response).await
 }
 
 async fn proxy_request<T: Serialize>(
@@ -481,54 +554,13 @@ async fn proxy_request<T: Serialize>(
     proxy_upstream(state, headers, req).await
 }
 
-async fn proxy_get(
-    state: &AppState,
-    headers: HeaderMap,
-    upstream: &str,
-    endpoint: &str,
-) -> Response {
-    let url = format!("{}/{}", upstream, endpoint);
-    let req = state.client.get(&url);
-
-    proxy_upstream(state, headers, req).await
-}
-
-async fn proxy_delete(
-    state: &AppState,
-    headers: HeaderMap,
-    upstream: &str,
-    endpoint: &str,
-) -> Response {
-    let url = format!("{}/{}", upstream, endpoint);
-    let req = state.client.delete(&url);
-
-    proxy_upstream(state, headers, req).await
-}
-
-async fn proxy_post_empty(
-    state: &AppState,
-    headers: HeaderMap,
-    upstream: &str,
-    endpoint: &str,
-) -> Response {
-    let url = format!("{}/{}", upstream, endpoint);
-    let req = state.client.post(&url);
-
-    proxy_upstream(state, headers, req).await
-}
-
-fn endpoint_with_query(endpoint: &str, uri: &Uri) -> String {
-    match uri.query() {
-        Some(query) => format!("{endpoint}?{query}"),
-        None => endpoint.to_string(),
-    }
-}
-
-async fn proxy_upstream_tracking_response_id(
+async fn proxy_upstream_tracking_response(
     state: Arc<AppState>,
     headers: HeaderMap,
     mut req: reqwest::RequestBuilder,
     upstream: String,
+    input: Vec<Value>,
+    persist_response: bool,
 ) -> Response {
     if let Some(auth_header) = headers.get("authorization") {
         req = req.header("authorization", auth_header);
@@ -542,18 +574,27 @@ async fn proxy_upstream_tracking_response_id(
             let headers = resp.headers().clone();
 
             if is_event_stream(&headers) {
-                let tracker = Arc::new(ResponseIdTracker::new(state, upstream));
-                let stream = resp
-                    .bytes_stream()
-                    .inspect_ok(move |chunk| tracker.observe(chunk));
-                let mut downstream = Response::new(Body::from_stream(stream));
-                *downstream.status_mut() = status;
-                *downstream.headers_mut() = headers;
-                downstream
+                if persist_response {
+                    let tracker = Arc::new(ResponseTracker::new(state, upstream, input));
+                    let stream = resp
+                        .bytes_stream()
+                        .inspect_ok(move |chunk| tracker.observe(chunk));
+                    let mut downstream = Response::new(Body::from_stream(stream));
+                    *downstream.status_mut() = status;
+                    *downstream.headers_mut() = headers;
+                    downstream
+                } else {
+                    let mut downstream = Response::new(Body::from_stream(resp.bytes_stream()));
+                    *downstream.status_mut() = status;
+                    *downstream.headers_mut() = headers;
+                    downstream
+                }
             } else {
                 match resp.bytes().await {
                     Ok(body) => {
-                        track_response_id_from_json(&state, &upstream, &body).await;
+                        if persist_response {
+                            track_response_from_json(&state, &upstream, &input, &body).await;
+                        }
                         let mut downstream = Response::new(Body::from(body));
                         *downstream.status_mut() = status;
                         *downstream.headers_mut() = headers;
@@ -584,17 +625,14 @@ fn is_event_stream(headers: &HeaderMap) -> bool {
         .is_some_and(|value| value.starts_with("text/event-stream"))
 }
 
-async fn track_response_id_from_json(state: &AppState, upstream: &str, body: &[u8]) {
-    let Ok(value) = serde_json::from_slice::<Value>(body) else {
+async fn track_response_from_json(state: &AppState, upstream: &str, input: &[Value], body: &[u8]) {
+    let Ok(response) = serde_json::from_slice::<Value>(body) else {
         return;
     };
-
-    if let Some(response_id) = response_id_from_value(&value) {
-        store_response_upstream(state, response_id, upstream.to_string()).await;
-    }
+    store_response(state, upstream.to_string(), response, input.to_vec()).await;
 }
 
-async fn store_response_upstream(state: &AppState, response_id: String, upstream: String) {
+async fn store_response(state: &AppState, upstream: String, response: Value, input: Vec<Value>) {
     if !state.responses_api_store_enabled {
         return;
     }
@@ -604,22 +642,53 @@ async fn store_response_upstream(state: &AppState, response_id: String, upstream
         return;
     };
 
-    if let Err(e) = response_store.store(&response_id, &upstream).await {
-        error!("failed to store upstream for response {response_id}: {e}");
+    let Some(response_id) = response_id_from_value(&response) else {
+        return;
+    };
+    let stored = StoredResponse {
+        upstream,
+        response,
+        input,
+    };
+    if let Err(e) = response_store.store(&response_id, &stored).await {
+        error!("failed to store response {response_id}: {e}");
     }
 }
 
 impl ResponseStore {
-    async fn store(&self, response_id: &str, upstream: &str) -> redis::RedisResult<()> {
+    async fn store(&self, response_id: &str, response: &StoredResponse) -> redis::RedisResult<()> {
         let mut connection = self.connection.clone();
+        let response = serde_json::to_string(response).map_err(|e| {
+            redis::RedisError::from((
+                redis::ErrorKind::Client,
+                "failed to serialize response",
+                e.to_string(),
+            ))
+        })?;
         connection
-            .set_ex(self.key(response_id), upstream, self.ttl_seconds)
+            .set_ex(self.key(response_id), response, self.ttl_seconds)
             .await
     }
 
-    async fn load(&self, response_id: &str) -> redis::RedisResult<Option<String>> {
+    async fn load(&self, response_id: &str) -> redis::RedisResult<Option<StoredResponse>> {
         let mut connection = self.connection.clone();
-        connection.get(self.key(response_id)).await
+        let response: Option<String> = connection.get(self.key(response_id)).await?;
+        response
+            .map(|response| {
+                serde_json::from_str(&response).map_err(|e| {
+                    redis::RedisError::from((
+                        redis::ErrorKind::Client,
+                        "failed to deserialize response",
+                        e.to_string(),
+                    ))
+                })
+            })
+            .transpose()
+    }
+
+    async fn delete(&self, response_id: &str) -> redis::RedisResult<()> {
+        let mut connection = self.connection.clone();
+        connection.del(self.key(response_id)).await
     }
 
     fn key(&self, response_id: &str) -> String {
@@ -646,18 +715,20 @@ fn response_id_from_value(value: &Value) -> Option<String> {
         .map(ToString::to_string)
 }
 
-struct ResponseIdTracker {
+struct ResponseTracker {
     state: Arc<AppState>,
     upstream: String,
+    input: Vec<Value>,
     buffer: Mutex<String>,
     tracked: AtomicBool,
 }
 
-impl ResponseIdTracker {
-    fn new(state: Arc<AppState>, upstream: String) -> Self {
+impl ResponseTracker {
+    fn new(state: Arc<AppState>, upstream: String, input: Vec<Value>) -> Self {
         Self {
             state,
             upstream,
+            input,
             buffer: Mutex::new(String::new()),
             tracked: AtomicBool::new(false),
         }
@@ -672,7 +743,7 @@ impl ResponseIdTracker {
             return;
         };
 
-        let Some(response_id) = self.find_response_id(chunk) else {
+        let Some(response) = self.find_response(chunk) else {
             return;
         };
 
@@ -683,13 +754,14 @@ impl ResponseIdTracker {
         {
             let state = Arc::clone(&self.state);
             let upstream = self.upstream.clone();
+            let input = self.input.clone();
             tokio::spawn(async move {
-                store_response_upstream(state.as_ref(), response_id, upstream).await;
+                store_response(state.as_ref(), upstream, response, input).await;
             });
         }
     }
 
-    fn find_response_id(&self, chunk: &str) -> Option<String> {
+    fn find_response(&self, chunk: &str) -> Option<Value> {
         let mut buffer = self.buffer.lock().expect("response id buffer poisoned");
         buffer.push_str(chunk);
 
@@ -707,15 +779,13 @@ impl ResponseIdTracker {
                 continue;
             }
             if let Ok(value) = serde_json::from_str::<Value>(data) {
-                if let Some(response_id) = response_id_from_value(&value) {
-                    return Some(response_id);
+                if value.get("type").and_then(Value::as_str) == Some("response.completed") {
+                    return value.get("response").cloned();
                 }
             }
         }
 
-        serde_json::from_str::<Value>(&buffer)
-            .ok()
-            .and_then(|value| response_id_from_value(&value))
+        None
     }
 }
 
@@ -846,24 +916,6 @@ mod tests {
     }
 
     #[test]
-    fn preserves_query_strings_for_response_subresources() {
-        let uri: Uri = "/v1/responses/resp_123/input_items?after=item_1&limit=20"
-            .parse()
-            .expect("valid uri");
-
-        assert_eq!(
-            endpoint_with_query("responses/resp_123/input_items", &uri),
-            "responses/resp_123/input_items?after=item_1&limit=20"
-        );
-
-        let uri: Uri = "/v1/responses/resp_123".parse().expect("valid uri");
-        assert_eq!(
-            endpoint_with_query("responses/resp_123", &uri),
-            "responses/resp_123"
-        );
-    }
-
-    #[test]
     fn detects_event_stream_content_type() {
         let mut headers = HeaderMap::new();
         headers.insert(
@@ -877,7 +929,7 @@ mod tests {
     }
 
     #[test]
-    fn extracts_streamed_response_id_across_chunks() {
+    fn extracts_completed_streamed_response_across_chunks() {
         let state = Arc::new(AppState {
             upstream_base: "http://default:8000/v1".to_string(),
             model_upstreams: HashMap::new(),
@@ -887,19 +939,85 @@ mod tests {
             responses_api_store_enabled: false,
             response_store: None,
         });
-        let tracker = ResponseIdTracker::new(state, "http://default:8000/v1".to_string());
+        let tracker = ResponseTracker::new(state, "http://default:8000/v1".to_string(), Vec::new());
 
         assert_eq!(
-            tracker.find_response_id("data: {\"type\":\"response.created\","),
+            tracker.find_response("data: {\"type\":\"response.completed\","),
             None
         );
         assert_eq!(
-            tracker
-                .find_response_id(
-                    "\"response\":{\"id\":\"resp_streamed\",\"object\":\"response\"}}\n"
-                )
-                .as_deref(),
-            Some("resp_streamed")
+            tracker.find_response(
+                "\"response\":{\"id\":\"resp_streamed\",\"object\":\"response\"}}\n"
+            ),
+            Some(json!({"id": "resp_streamed", "object": "response"}))
+        );
+    }
+
+    #[test]
+    fn materializes_continuation_input() {
+        let previous = StoredResponse {
+            upstream: "http://model-a:8000/v1".to_string(),
+            response: json!({
+                "id": "resp_previous",
+                "model": "model-a",
+                "output": [{"role": "assistant", "content": "prior answer"}]
+            }),
+            input: vec![json!({"role": "user", "content": "prior question"})],
+        };
+
+        assert_eq!(
+            continuation_input(&previous, Some(&json!("next question"))),
+            vec![
+                json!({"role": "user", "content": "prior question"}),
+                json!({"role": "assistant", "content": "prior answer"}),
+                json!({"role": "user", "content": "next question"}),
+            ]
+        );
+    }
+
+    #[test]
+    fn honors_explicit_response_store_flag() {
+        let default_request = serde_json::from_value::<ResponsesRequest>(json!({
+            "input": "persist by default"
+        }))
+        .expect("valid responses request");
+        assert!(should_store_response(&default_request));
+
+        let stored_request = serde_json::from_value::<ResponsesRequest>(json!({
+            "input": "persist explicitly",
+            "store": true
+        }))
+        .expect("valid responses request");
+        assert!(should_store_response(&stored_request));
+
+        let unpersisted_request = serde_json::from_value::<ResponsesRequest>(json!({
+            "input": "do not persist",
+            "store": false
+        }))
+        .expect("valid responses request");
+        assert!(!should_store_response(&unpersisted_request));
+    }
+
+    #[test]
+    fn serializes_stateless_continuation_request() {
+        let mut request = serde_json::from_value::<ResponsesRequest>(json!({
+            "previous_response_id": "resp_prior",
+            "input": "continue"
+        }))
+        .expect("valid responses request");
+        request.previous_response_id = None;
+        set_request_input(
+            &mut request,
+            vec![json!({"role": "user", "content": "continue"})],
+        );
+        disable_upstream_response_store(&mut request);
+
+        assert_eq!(
+            serde_json::to_value(request).expect("serializable request"),
+            json!({
+                "input": [{"role": "user", "content": "continue"}],
+                "store": false
+            })
         );
     }
 

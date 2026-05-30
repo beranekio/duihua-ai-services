@@ -31,7 +31,9 @@ struct AppState {
     upstream_api_key: Option<String>,
     client: Client,
     responses_api_store_enabled: bool,
+    responses_api_background_enabled: bool,
     response_store: Option<ResponseStore>,
+    background_tasks: Mutex<HashMap<String, tokio::task::AbortHandle>>,
 }
 
 #[derive(Clone)]
@@ -173,6 +175,8 @@ async fn main() -> Result<()> {
     let upstream_api_key = env::var("UPSTREAM_API_KEY").ok();
     let model_upstreams = parse_model_upstreams(env::var("MODEL_UPSTREAMS").ok());
     let responses_api_store_enabled = parse_bool_env("RESPONSES_API_STORE_ENABLED", false);
+    let responses_api_background_enabled =
+        parse_bool_env("RESPONSES_API_BACKGROUND_ENABLED", false);
     let response_store = if responses_api_store_enabled {
         Some(response_store_from_env().await?)
     } else {
@@ -186,7 +190,9 @@ async fn main() -> Result<()> {
         upstream_api_key,
         client: Client::new(),
         responses_api_store_enabled,
+        responses_api_background_enabled,
         response_store,
+        background_tasks: Mutex::new(HashMap::new()),
     });
 
     let app = Router::new()
@@ -326,11 +332,26 @@ async fn responses(
     headers: HeaderMap,
     Json(mut payload): Json<ResponsesRequest>,
 ) -> Response {
+    let background = payload.extra.get("background").and_then(Value::as_bool) == Some(true);
     let persist_response = state.responses_api_store_enabled && should_store_response(&payload);
-    if persist_response && payload.extra.get("background").and_then(Value::as_bool) == Some(true) {
+    if background && !state.responses_api_background_enabled {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": {"message": "background responses are disabled; set RESPONSES_API_BACKGROUND_ENABLED=true to enable them", "type": "invalid_request_error", "param": "background", "code": 400}})),
+        )
+            .into_response();
+    }
+    if background && !persist_response {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": {"message": "background responses require the gateway-owned response store and store=true", "type": "invalid_request_error", "param": "background", "code": 400}})),
+        )
+            .into_response();
+    }
+    if background && payload.extra.get("stream").and_then(Value::as_bool) == Some(true) {
         return (
             StatusCode::NOT_IMPLEMENTED,
-            "background responses are not supported by the gateway-owned response store",
+            "streaming background responses are not supported",
         )
             .into_response();
     }
@@ -365,7 +386,11 @@ async fn responses(
     if state.responses_api_store_enabled {
         disable_upstream_response_store(&mut payload);
     }
-    proxy_response_request(state, headers, payload, upstream, input, persist_response).await
+    if background {
+        start_background_response(state, headers, payload, upstream, input).await
+    } else {
+        proxy_response_request(state, headers, payload, upstream, input, persist_response).await
+    }
 }
 
 async fn response_input_tokens(
@@ -429,6 +454,14 @@ async fn delete_response(
         Ok(stored) => stored,
         Err(response) => return response,
     };
+    if let Some(task) = state
+        .background_tasks
+        .lock()
+        .expect("background task map poisoned")
+        .remove(&response_id)
+    {
+        task.abort();
+    }
     if let Some(response_store) = &state.response_store {
         if let Err(e) = response_store.delete(&response_id).await {
             error!("failed to delete response {response_id}: {e}");
@@ -448,17 +481,38 @@ async fn cancel_response(
         Ok(stored) => stored,
         Err(response) => return response,
     };
-    if stored.response.get("status").and_then(Value::as_str) == Some("completed") {
+    if stored.response.get("background").and_then(Value::as_bool) != Some(true) {
         return (
             StatusCode::BAD_REQUEST,
             Json(json!({"error": {"message": "Cannot cancel a synchronous response.", "type": "invalid_request_error", "param": "response_id", "code": 400}})),
         ).into_response();
     }
-    (
-        StatusCode::NOT_IMPLEMENTED,
-        "cancelling stored background responses is not supported",
-    )
-        .into_response()
+    if !matches!(
+        stored.response.get("status").and_then(Value::as_str),
+        Some("queued" | "in_progress")
+    ) {
+        return Json(stored.response).into_response();
+    }
+
+    let mut cancelled = stored;
+    cancelled.response["status"] = Value::String("cancelled".to_string());
+    cancelled.response["incomplete_details"] = json!({"reason": "cancelled"});
+    let Some(response_store) = &state.response_store else {
+        return (StatusCode::BAD_GATEWAY, "response id store unavailable").into_response();
+    };
+    if let Err(e) = response_store.store(&response_id, &cancelled).await {
+        error!("failed to store cancelled response {response_id}: {e}");
+        return (StatusCode::BAD_GATEWAY, "response id store write failed").into_response();
+    }
+    if let Some(task) = state
+        .background_tasks
+        .lock()
+        .expect("background task map poisoned")
+        .remove(&response_id)
+    {
+        task.abort();
+    }
+    Json(cancelled.response).into_response()
 }
 
 async fn list_response_input_items(
@@ -525,6 +579,130 @@ async fn load_response(
             Err((StatusCode::BAD_GATEWAY, "response id store read failed").into_response())
         }
     }
+}
+
+async fn start_background_response(
+    state: Arc<AppState>,
+    headers: HeaderMap,
+    mut payload: ResponsesRequest,
+    upstream: String,
+    input: Vec<Value>,
+) -> Response {
+    let response_id = format!("resp_{}", uuid::Uuid::new_v4().simple());
+    payload.extra["background"] = Value::Bool(false);
+    payload.extra["stream"] = Value::Bool(false);
+    let queued = background_response(&response_id, &payload, "queued");
+    let stored = StoredResponse {
+        upstream: upstream.clone(),
+        response: queued.clone(),
+        input: input.clone(),
+    };
+    let Some(response_store) = &state.response_store else {
+        return (StatusCode::BAD_GATEWAY, "response id store unavailable").into_response();
+    };
+    if let Err(e) = response_store.store(&response_id, &stored).await {
+        error!("failed to store queued background response {response_id}: {e}");
+        return (StatusCode::BAD_GATEWAY, "response id store write failed").into_response();
+    }
+
+    let task_state = Arc::clone(&state);
+    let task_response_id = response_id.clone();
+    let (start_task, task_started) = tokio::sync::oneshot::channel();
+    let task = tokio::spawn(async move {
+        let _ = task_started.await;
+        run_background_response(
+            task_state.as_ref(),
+            headers,
+            payload,
+            upstream,
+            input,
+            &task_response_id,
+        )
+        .await;
+        task_state
+            .background_tasks
+            .lock()
+            .expect("background task map poisoned")
+            .remove(&task_response_id);
+    });
+    state
+        .background_tasks
+        .lock()
+        .expect("background task map poisoned")
+        .insert(response_id, task.abort_handle());
+    let _ = start_task.send(());
+
+    Json(queued).into_response()
+}
+
+async fn run_background_response(
+    state: &AppState,
+    headers: HeaderMap,
+    payload: ResponsesRequest,
+    upstream: String,
+    input: Vec<Value>,
+    response_id: &str,
+) {
+    let url = format!("{upstream}/responses");
+    let mut req = state.client.post(&url).json(&payload);
+    if let Some(auth_header) = headers.get("authorization") {
+        req = req.header("authorization", auth_header);
+    } else if let Some(api_key) = &state.upstream_api_key {
+        req = req.bearer_auth(api_key);
+    }
+
+    let response = match req.send().await {
+        Ok(response) if response.status().is_success() => match response.json::<Value>().await {
+            Ok(mut response) => {
+                response["id"] = Value::String(response_id.to_string());
+                response["background"] = Value::Bool(true);
+                response
+            }
+            Err(e) => failed_background_response(
+                response_id,
+                &payload,
+                format!("upstream response body read failed: {e}"),
+            ),
+        },
+        Ok(response) => failed_background_response(
+            response_id,
+            &payload,
+            format!("upstream returned HTTP {}", response.status()),
+        ),
+        Err(e) => failed_background_response(
+            response_id,
+            &payload,
+            format!("upstream request failed: {e}"),
+        ),
+    };
+    store_response(state, upstream, response, input).await;
+}
+
+fn background_response(response_id: &str, payload: &ResponsesRequest, status: &str) -> Value {
+    json!({
+        "id": response_id,
+        "object": "response",
+        "created_at": std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs(),
+        "status": status,
+        "background": true,
+        "error": null,
+        "incomplete_details": null,
+        "model": payload.model,
+        "output": []
+    })
+}
+
+fn failed_background_response(
+    response_id: &str,
+    payload: &ResponsesRequest,
+    message: String,
+) -> Value {
+    let mut response = background_response(response_id, payload, "failed");
+    response["error"] = json!({"code": "server_error", "message": message});
+    response
 }
 
 async fn proxy_response_request<T: Serialize>(
@@ -902,7 +1080,9 @@ mod tests {
             upstream_api_key: None,
             client: Client::new(),
             responses_api_store_enabled: false,
+            responses_api_background_enabled: false,
             response_store: None,
+            background_tasks: Mutex::new(HashMap::new()),
         };
 
         assert_eq!(
@@ -937,7 +1117,9 @@ mod tests {
             upstream_api_key: None,
             client: Client::new(),
             responses_api_store_enabled: false,
+            responses_api_background_enabled: false,
             response_store: None,
+            background_tasks: Mutex::new(HashMap::new()),
         });
         let tracker = ResponseTracker::new(state, "http://default:8000/v1".to_string(), Vec::new());
 
@@ -1019,6 +1201,69 @@ mod tests {
                 "store": false
             })
         );
+    }
+
+    #[tokio::test]
+    async fn rejects_background_response_when_feature_is_disabled() {
+        let state = Arc::new(AppState {
+            upstream_base: "http://default:8000/v1".to_string(),
+            model_upstreams: HashMap::new(),
+            default_model: "model-default".to_string(),
+            upstream_api_key: None,
+            client: Client::new(),
+            responses_api_store_enabled: true,
+            responses_api_background_enabled: false,
+            response_store: None,
+            background_tasks: Mutex::new(HashMap::new()),
+        });
+        let request = serde_json::from_value::<ResponsesRequest>(json!({
+            "model": "model-a",
+            "input": "slow request",
+            "background": true
+        }))
+        .expect("valid responses request");
+
+        let response = responses(State(state), HeaderMap::new(), Json(request)).await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("readable response body");
+
+        assert!(String::from_utf8_lossy(&body).contains("background responses are disabled"));
+    }
+
+    #[test]
+    fn builds_gateway_owned_background_response() {
+        let request = serde_json::from_value::<ResponsesRequest>(json!({
+            "model": "model-a",
+            "input": "slow request"
+        }))
+        .expect("valid responses request");
+
+        let response = background_response("resp_gateway", &request, "queued");
+
+        assert_eq!(response["id"], "resp_gateway");
+        assert_eq!(response["object"], "response");
+        assert_eq!(response["status"], "queued");
+        assert_eq!(response["background"], true);
+        assert_eq!(response["model"], "model-a");
+        assert_eq!(response["output"], json!([]));
+    }
+
+    #[test]
+    fn builds_failed_gateway_owned_background_response() {
+        let request = serde_json::from_value::<ResponsesRequest>(json!({
+            "model": "model-a",
+            "input": "slow request"
+        }))
+        .expect("valid responses request");
+
+        let response =
+            failed_background_response("resp_gateway", &request, "upstream failed".to_string());
+
+        assert_eq!(response["status"], "failed");
+        assert_eq!(response["error"]["code"], "server_error");
+        assert_eq!(response["error"]["message"], "upstream failed");
     }
 
     #[test]

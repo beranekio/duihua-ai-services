@@ -18,6 +18,7 @@ gateway:
     responseIdStoreUrl: redis://valkey:6379
     responseIdStoreKeyPrefix: duihua:responses
     responseIdStoreTtlSeconds: "86400"
+    responsesApiBackgroundEnabled: false
     defaultModel: HuggingFaceTB/SmolLM2-135M-Instruct
     upstreamBaseUrl: http://127.0.0.1:9/v1
 

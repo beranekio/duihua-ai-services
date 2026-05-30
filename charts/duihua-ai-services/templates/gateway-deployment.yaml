@@ -35,6 +35,8 @@ spec:
               value: {{ .Values.gateway.env.upstreamBaseUrl | quote }}
             - name: RESPONSES_API_STORE_ENABLED
               value: {{ .Values.inference.responsesApiStore.enabled | quote }}
+            - name: RESPONSES_API_BACKGROUND_ENABLED
+              value: {{ .Values.gateway.env.responsesApiBackgroundEnabled | quote }}
             - name: RESPONSE_ID_STORE_URL
               {{ if .Values.valkey.enabled }}
               value: "redis://{{ include "duihua.fullname" . }}-valkey:{{ .Values.valkey.service.port }}"

@@ -18,6 +18,9 @@ gateway:
     responseIdStoreUrl: redis://valkey:6379
     responseIdStoreKeyPrefix: duihua:responses
     responseIdStoreTtlSeconds: "86400"
+    # Opt in to gateway-owned Responses API background execution. Requires
+    # inference.responsesApiStore.enabled=true.
+    responsesApiBackgroundEnabled: false
     defaultModel: google/gemma-4-31B-it
     upstreamBaseUrl: http://vllm:8000/v1
 

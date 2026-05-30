@@ -86,11 +86,13 @@ gateway:
   env:
     responseIdStoreKeyPrefix: duihua:responses
     responseIdStoreTtlSeconds: "86400"
+    # Optional: opt in to gateway-owned background execution.
+    responsesApiBackgroundEnabled: true
 ```
 
 To use an external Valkey/Redis-compatible service instead, keep `valkey.enabled=false` and set `gateway.env.responseIdStoreUrl`.
 
-For local Docker Compose, set `RESPONSES_API_STORE_ENABLED=true` when starting the stack to exercise persisted follow-up Responses API calls. Streaming responses are persisted after their `response.completed` event. Background responses are not currently supported by the gateway-owned store.
+For local Docker Compose, set `RESPONSES_API_STORE_ENABLED=true` when starting the stack to exercise persisted follow-up Responses API calls. Streaming responses are persisted after their `response.completed` event. Gateway-owned background execution is optional and disabled by default; opt in by setting `RESPONSES_API_BACKGROUND_ENABLED=true` locally or `gateway.env.responsesApiBackgroundEnabled=true` in Helm. Requests with `background: true` also require the gateway-owned store and `store: true` (the default): the gateway immediately persists and returns a queued response, performs a synchronous request to vLLM in a gateway task, and serves polling and cancellation through the existing Responses API routes without enabling vLLM's in-process store. Combining `background: true` with `stream: true` is not currently supported.
 
 ## Cloud-provider independence
 

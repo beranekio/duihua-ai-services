@@ -142,6 +142,10 @@ fn set_request_input(request: &mut ResponsesRequest, input: Vec<Value>) {
     request.extra["input"] = Value::Array(input);
 }
 
+fn should_store_response(request: &ResponsesRequest) -> bool {
+    request.extra.get("store").and_then(Value::as_bool) != Some(false)
+}
+
 fn disable_upstream_response_store(request: &mut ResponsesRequest) {
     request.extra["store"] = Value::Bool(false);
 }
@@ -322,9 +326,8 @@ async fn responses(
     headers: HeaderMap,
     Json(mut payload): Json<ResponsesRequest>,
 ) -> Response {
-    if state.responses_api_store_enabled
-        && payload.extra.get("background").and_then(Value::as_bool) == Some(true)
-    {
+    let persist_response = state.responses_api_store_enabled && should_store_response(&payload);
+    if persist_response && payload.extra.get("background").and_then(Value::as_bool) == Some(true) {
         return (
             StatusCode::NOT_IMPLEMENTED,
             "background responses are not supported by the gateway-owned response store",
@@ -362,7 +365,7 @@ async fn responses(
     if state.responses_api_store_enabled {
         disable_upstream_response_store(&mut payload);
     }
-    proxy_response_request(state, headers, payload, upstream, input).await
+    proxy_response_request(state, headers, payload, upstream, input, persist_response).await
 }
 
 async fn response_input_tokens(
@@ -530,11 +533,12 @@ async fn proxy_response_request<T: Serialize>(
     payload: T,
     upstream: String,
     input: Vec<Value>,
+    persist_response: bool,
 ) -> Response {
     let url = format!("{upstream}/responses");
     let req = state.client.post(&url).json(&payload);
 
-    proxy_upstream_tracking_response(state, headers, req, upstream, input).await
+    proxy_upstream_tracking_response(state, headers, req, upstream, input, persist_response).await
 }
 
 async fn proxy_request<T: Serialize>(
@@ -556,6 +560,7 @@ async fn proxy_upstream_tracking_response(
     mut req: reqwest::RequestBuilder,
     upstream: String,
     input: Vec<Value>,
+    persist_response: bool,
 ) -> Response {
     if let Some(auth_header) = headers.get("authorization") {
         req = req.header("authorization", auth_header);
@@ -569,18 +574,27 @@ async fn proxy_upstream_tracking_response(
             let headers = resp.headers().clone();
 
             if is_event_stream(&headers) {
-                let tracker = Arc::new(ResponseTracker::new(state, upstream, input));
-                let stream = resp
-                    .bytes_stream()
-                    .inspect_ok(move |chunk| tracker.observe(chunk));
-                let mut downstream = Response::new(Body::from_stream(stream));
-                *downstream.status_mut() = status;
-                *downstream.headers_mut() = headers;
-                downstream
+                if persist_response {
+                    let tracker = Arc::new(ResponseTracker::new(state, upstream, input));
+                    let stream = resp
+                        .bytes_stream()
+                        .inspect_ok(move |chunk| tracker.observe(chunk));
+                    let mut downstream = Response::new(Body::from_stream(stream));
+                    *downstream.status_mut() = status;
+                    *downstream.headers_mut() = headers;
+                    downstream
+                } else {
+                    let mut downstream = Response::new(Body::from_stream(resp.bytes_stream()));
+                    *downstream.status_mut() = status;
+                    *downstream.headers_mut() = headers;
+                    downstream
+                }
             } else {
                 match resp.bytes().await {
                     Ok(body) => {
-                        track_response_from_json(&state, &upstream, &input, &body).await;
+                        if persist_response {
+                            track_response_from_json(&state, &upstream, &input, &body).await;
+                        }
                         let mut downstream = Response::new(Body::from(body));
                         *downstream.status_mut() = status;
                         *downstream.headers_mut() = headers;
@@ -959,6 +973,29 @@ mod tests {
                 json!({"role": "user", "content": "next question"}),
             ]
         );
+    }
+
+    #[test]
+    fn honors_explicit_response_store_flag() {
+        let default_request = serde_json::from_value::<ResponsesRequest>(json!({
+            "input": "persist by default"
+        }))
+        .expect("valid responses request");
+        assert!(should_store_response(&default_request));
+
+        let stored_request = serde_json::from_value::<ResponsesRequest>(json!({
+            "input": "persist explicitly",
+            "store": true
+        }))
+        .expect("valid responses request");
+        assert!(should_store_response(&stored_request));
+
+        let unpersisted_request = serde_json::from_value::<ResponsesRequest>(json!({
+            "input": "do not persist",
+            "store": false
+        }))
+        .expect("valid responses request");
+        assert!(!should_store_response(&unpersisted_request));
     }
 
     #[test]

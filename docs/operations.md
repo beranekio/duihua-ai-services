@@ -53,4 +53,4 @@ Enable the gateway-owned store with `inference.responsesApiStore.enabled=true`. 
 
 The chart-managed Valkey deployment is suitable for development. For production, use an externally managed, highly available Valkey/Redis-compatible service by keeping `valkey.enabled=false` and pointing `gateway.env.responseIdStoreUrl` at that service. Tune `gateway.env.responseIdStoreTtlSeconds` to match how long clients may use stored Responses API ids.
 
-Streaming responses are saved once the gateway observes their `response.completed` event. Background responses are not currently supported by the gateway-owned store.
+Creation requests that explicitly set `store: false` are not persisted by the gateway. Streaming responses are saved once the gateway observes their `response.completed` event. Background responses are not currently supported by the gateway-owned store.

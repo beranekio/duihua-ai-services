@@ -67,7 +67,7 @@ curl http://127.0.0.1:8080/v1/responses \
 
 The gateway can persist completed Responses API objects and their materialized conversation input in Valkey-compatible Redis storage. Follow-up creation requests with `previous_response_id` are expanded by the gateway into stateless upstream requests, while retrieval, deletion, and input-item requests are served directly from Valkey. The gateway does not enable or depend on vLLM's in-process Responses API store, so inference deployments can use multiple replicas and scale to zero between calls.
 
-Response persistence is optional and disabled by default. When disabled, follow-up `{response_id}` requests return the same not-found error shape as vLLM instead of being forwarded to an inference deployment.
+Response persistence is optional and disabled by default. When disabled, follow-up `{response_id}` requests return the same not-found error shape as vLLM instead of being forwarded to an inference deployment. Creation requests that explicitly set `store: false` are never persisted by the gateway.
 
 To enable it with the chart-managed Valkey instance:
 

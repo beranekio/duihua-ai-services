@@ -163,6 +163,9 @@ scripts/build-and-load-images.sh
 
 # 4) Deploy Helm chart and verify rollout status
 scripts/deploy-kind.sh
+
+# 5) Exercise the gateway Responses API store and background jobs
+scripts/smoke-test-kind.sh
 ```
 
 Or run the full workflow:
@@ -191,6 +194,8 @@ Useful environment variables:
 - `INFERENCE_ENABLED` (default: `true`)
 - `VALUES_FILE` (default: `charts/duihua-ai-services/values-kind.yaml`)
 - `KEDA_NAMESPACE` (default: `keda`)
+- `GATEWAY_BASE_URL` (default: `http://127.0.0.1:8080`, used by `scripts/smoke-test-kind.sh`)
+- `DEFAULT_MODEL` (default: `HuggingFaceTB/SmolLM2-135M-Instruct`, used by `scripts/smoke-test-kind.sh`)
 
 ## CI
 

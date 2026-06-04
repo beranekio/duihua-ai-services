@@ -30,6 +30,8 @@ gateway:
       # upstream inference synchronously and persist the completed response in Valkey.
       enabled: true
       ttlSecondsAfterFinished: 600
+      # Defaults to gateway.resources when unset.
+      resources: {}
 
 inference:
   enabled: true
@@ -95,7 +97,8 @@ valkey:
       memory: 256Mi
 
 serviceAccount:
-  create: true
+  # Created only when gateway background jobs are enabled.
+  create: false
   name: ""
 
 ingress:

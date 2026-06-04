@@ -1,4 +1,4 @@
-{{- if and .Values.gateway.responsesApiStore.enabled .Values.gateway.responsesApiStore.backgroundJobs.enabled }}
+{{- if include "duihua.backgroundJobs.enabled" . }}
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
@@ -6,7 +6,7 @@ metadata:
 rules:
   - apiGroups: ["batch"]
     resources: ["jobs"]
-    verbs: ["create", "delete"]
+    verbs: ["create", "get", "delete"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

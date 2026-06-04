@@ -7,13 +7,14 @@ use k8s_openapi::{
         batch::v1::{Job, JobSpec},
         core::v1::{
             Container, EnvVar, EnvVarSource, ObjectFieldSelector, PodSpec, PodTemplateSpec,
+            ResourceRequirements,
         },
     },
     apimachinery::pkg::apis::meta::v1::ObjectMeta,
 };
 use kube::{
     api::{DeleteParams, PostParams, PropagationPolicy},
-    Api, Client,
+    Api, Client, Error,
 };
 use reqwest::Client as HttpClient;
 use serde_json::{json, Value};
@@ -30,6 +31,7 @@ pub struct BackgroundJobs {
     image_pull_policy: String,
     service_account_name: String,
     ttl_seconds_after_finished: i32,
+    resources: Option<ResourceRequirements>,
 }
 
 pub fn is_background_worker_invocation() -> bool {
@@ -96,10 +98,18 @@ pub async fn run_background_worker() -> Result<()> {
     match req.send().await {
         Ok(resp) => {
             let status = resp.status();
-            let body = resp
-                .bytes()
-                .await
-                .context("failed to read upstream background response body")?;
+            let body = match resp.bytes().await {
+                Ok(body) => body,
+                Err(e) => {
+                    mark_background_failed(
+                        &response_store,
+                        &response_id,
+                        &format!("failed to read upstream background response body: {e}"),
+                    )
+                    .await?;
+                    return Ok(());
+                }
+            };
             if !status.is_success() {
                 let message = String::from_utf8_lossy(&body);
                 mark_background_failed(&response_store, &response_id, &message).await?;
@@ -274,6 +284,7 @@ pub async fn background_jobs_from_env() -> Result<Option<BackgroundJobs>> {
         image_pull_policy,
         service_account_name,
         ttl_seconds_after_finished,
+        resources: background_job_resources_from_env(),
     }))
 }
 
@@ -286,6 +297,7 @@ impl BackgroundJobs {
             &self.image_pull_policy,
             &self.service_account_name,
             self.ttl_seconds_after_finished,
+            self.resources.clone(),
             store_env,
         )?;
         jobs.create(&PostParams::default(), &job)
@@ -301,10 +313,44 @@ impl BackgroundJobs {
             propagation_policy: Some(PropagationPolicy::Background),
             ..Default::default()
         };
-        if jobs.delete(&name, &delete_params).await.is_err() {
-            // Job may already have finished; cancellation still updates stored state.
+        match jobs.delete(&name, &delete_params).await {
+            Ok(_) => Ok(()),
+            Err(Error::Api(err)) if err.code == 404 => Ok(()),
+            Err(err) => Err(err).context(format!("failed to delete background job {name}")),
         }
-        Ok(())
+    }
+
+    pub async fn reconcile_failed_response(
+        &self,
+        response_store: &ResponseStore,
+        response_id: &str,
+        stored: &StoredResponse,
+    ) -> Result<StoredResponse> {
+        if !is_in_flight_background(stored) {
+            return Ok(stored.clone());
+        }
+
+        let jobs: Api<Job> = Api::namespaced(self.client.clone(), &self.namespace);
+        let name = background_job_name(response_id);
+        let job = match jobs.get(&name).await {
+            Ok(job) => job,
+            Err(Error::Api(err)) if err.code == 404 => return Ok(stored.clone()),
+            Err(err) => {
+                error!("failed to read background job {name} for reconciliation: {err}");
+                return Ok(stored.clone());
+            }
+        };
+
+        if !job_has_failed(&job) {
+            return Ok(stored.clone());
+        }
+
+        let message = job_failure_message(&job);
+        mark_background_failed(response_store, response_id, &message).await?;
+        Ok(response_store
+            .load(response_id)
+            .await?
+            .unwrap_or_else(|| stored.clone()))
     }
 }
 
@@ -351,12 +397,44 @@ pub fn build_cancelled_response(stored: &StoredResponse, response_id: &str) -> V
     response
 }
 
+fn background_job_resources_from_env() -> Option<ResourceRequirements> {
+    let json = env::var("BACKGROUND_JOB_RESOURCES_JSON").ok()?;
+    serde_json::from_str(&json).ok()
+}
+
+fn job_has_failed(job: &Job) -> bool {
+    let Some(status) = &job.status else {
+        return false;
+    };
+    status.failed.unwrap_or(0) > 0
+        || status.conditions.as_ref().is_some_and(|conditions| {
+            conditions
+                .iter()
+                .any(|condition| condition.type_ == "Failed" && condition.status == "True")
+        })
+}
+
+fn job_failure_message(job: &Job) -> String {
+    job.status
+        .as_ref()
+        .and_then(|status| status.conditions.as_ref())
+        .and_then(|conditions| {
+            conditions
+                .iter()
+                .find(|condition| condition.type_ == "Failed" && condition.status == "True")
+                .and_then(|condition| condition.message.clone())
+        })
+        .filter(|message| !message.is_empty())
+        .unwrap_or_else(|| "background job failed".to_string())
+}
+
 fn background_job(
     response_id: &str,
     image: &str,
     image_pull_policy: &str,
     service_account_name: &str,
     ttl_seconds_after_finished: i32,
+    resources: Option<ResourceRequirements>,
     store_env: &[(&str, &str)],
 ) -> Result<Job> {
     let name = background_job_name(response_id);
@@ -402,6 +480,7 @@ fn background_job(
                             WORKER_SUBCOMMAND.to_string(),
                         ]),
                         env: Some(env),
+                        resources,
                         ..Default::default()
                     }],
                     ..Default::default()

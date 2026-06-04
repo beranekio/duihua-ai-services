@@ -161,6 +161,21 @@ fn should_persist_gateway_response(store_enabled: bool, request: &ResponsesReque
     store_enabled && should_store_response(request)
 }
 
+fn previous_response_not_ready() -> Response {
+    (
+        StatusCode::CONFLICT,
+        Json(ErrorResponse {
+            error: ErrorBody {
+                message: "Previous response is not ready.".to_string(),
+                error_type: "invalid_request_error",
+                param: "previous_response_id",
+                code: 409,
+            },
+        }),
+    )
+        .into_response()
+}
+
 fn response_model(response: &Value) -> Option<String> {
     response
         .get("model")
@@ -407,6 +422,9 @@ async fn responses(
             Ok(previous) => previous,
             Err(response) => return response,
         };
+        if background::is_in_flight_background(&previous) {
+            return previous_response_not_ready();
+        }
         if payload.model.is_none() {
             payload.model = response_model(&previous.response);
         }
@@ -488,6 +506,9 @@ async fn response_input_tokens(
             Ok(previous) => previous,
             Err(response) => return response,
         };
+        if background::is_in_flight_background(&previous) {
+            return previous_response_not_ready();
+        }
         if payload.model.is_none() {
             payload.model = response_model(&previous.response);
         }
@@ -660,10 +681,23 @@ async fn load_stored_response(
     match response_store.load(response_id).await {
         Ok(Some(response)) => {
             if background::stored_response_status(&response) == Some("deleted") {
-                Err(response_not_found(response_id))
-            } else {
-                Ok(response)
+                return Err(response_not_found(response_id));
             }
+            let response = if let Some(background_jobs) = &state.background_jobs {
+                match background_jobs
+                    .reconcile_failed_response(response_store, response_id, &response)
+                    .await
+                {
+                    Ok(response) => response,
+                    Err(e) => {
+                        error!("failed to reconcile background job status for {response_id}: {e}");
+                        response
+                    }
+                }
+            } else {
+                response
+            };
+            Ok(response)
         }
         Ok(None) => Err(response_not_found(response_id)),
         Err(e) => {

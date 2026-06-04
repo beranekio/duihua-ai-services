@@ -12,7 +12,9 @@ spec:
       labels:
         app: {{ include "duihua.fullname" . }}-gateway
     spec:
+      {{- if include "duihua.backgroundJobs.enabled" . }}
       serviceAccountName: {{ include "duihua.serviceAccountName" . }}
+      {{- end }}
       containers:
         - name: gateway
           image: "{{ .Values.gateway.image.repository }}:{{ .Values.gateway.image.tag }}"
@@ -35,7 +37,7 @@ spec:
             - name: UPSTREAM_BASE_URL
               value: {{ .Values.gateway.env.upstreamBaseUrl | quote }}
             - name: RESPONSES_API_STORE_ENABLED
-              value: {{ .Values.gateway.responsesApiStore.enabled | quote }}
+              value: {{ include "duihua.responsesApiStore.enabled" . | quote }}
             - name: RESPONSE_ID_STORE_URL
               {{ if .Values.valkey.enabled }}
               value: "redis://{{ include "duihua.fullname" . }}-valkey:{{ .Values.valkey.service.port }}"
@@ -46,7 +48,7 @@ spec:
               value: {{ .Values.gateway.env.responseIdStoreKeyPrefix | quote }}
             - name: RESPONSE_ID_STORE_TTL_SECONDS
               value: {{ .Values.gateway.env.responseIdStoreTtlSeconds | quote }}
-            {{- if and .Values.gateway.responsesApiStore.enabled .Values.gateway.responsesApiStore.backgroundJobs.enabled }}
+            {{- if include "duihua.backgroundJobs.enabled" . }}
             - name: RESPONSES_BACKGROUND_JOBS_ENABLED
               value: "true"
             - name: BACKGROUND_JOB_IMAGE
@@ -57,6 +59,8 @@ spec:
               value: {{ include "duihua.serviceAccountName" . | quote }}
             - name: BACKGROUND_JOB_TTL_SECONDS_AFTER_FINISHED
               value: {{ .Values.gateway.responsesApiStore.backgroundJobs.ttlSecondsAfterFinished | quote }}
+            - name: BACKGROUND_JOB_RESOURCES_JSON
+              value: {{ include "duihua.backgroundJob.resources" . | quote }}
             - name: POD_NAMESPACE
               valueFrom:
                 fieldRef:

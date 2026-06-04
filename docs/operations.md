@@ -49,8 +49,14 @@ If running on AWS EKS:
 
 The gateway can store completed Responses API objects and materialized conversation input in a Valkey/Redis-compatible store. This lets the gateway serve retrieval, deletion, and input-item requests without waking an inference deployment. For `POST /v1/responses` requests with `previous_response_id`, the gateway loads the saved conversation, appends the previous output and new input, removes `previous_response_id`, and sends a stateless request to the selected upstream model.
 
-Enable the gateway-owned store with `inference.responsesApiStore.enabled=true`. This setting does **not** set `VLLM_ENABLE_RESPONSES_API_STORE`: the implementation intentionally avoids vLLM's in-memory response store. Inference deployments may retain the default `autoscaling.replicas.min=0`, scale to zero while idle, and use more than one replica when configured.
+Enable the gateway-owned store with `gateway.responsesApiStore.enabled=true`. This setting does **not** set `VLLM_ENABLE_RESPONSES_API_STORE`: the implementation intentionally avoids vLLM's in-memory response store. Inference deployments may retain the default `autoscaling.replicas.min=0`, scale to zero while idle, and use more than one replica when configured.
 
 The chart-managed Valkey deployment is suitable for development. For production, use an externally managed, highly available Valkey/Redis-compatible service by keeping `valkey.enabled=false` and pointing `gateway.env.responseIdStoreUrl` at that service. Tune `gateway.env.responseIdStoreTtlSeconds` to match how long clients may use stored Responses API ids.
 
-Creation requests that explicitly set `store: false` are not persisted by the gateway. Streaming responses are saved once the gateway observes their `response.completed` event. Background responses are not currently supported by the gateway-owned store.
+Creation requests that explicitly set `store: false` are not persisted by the gateway. Streaming responses are saved once the gateway observes their `response.completed` event.
+
+### Background Responses API requests
+
+When `gateway.responsesApiStore.enabled=true` and `gateway.responsesApiStore.backgroundJobs.enabled=true` (default), `POST /v1/responses` with `background=true` returns immediately with a `queued` response stored in Valkey. The gateway creates a Kubernetes Job that runs `duihua-gateway background-worker`, issues a synchronous upstream `/responses` call with `background=false` and `store=false`, and updates Valkey when the job completes. Clients poll `GET /v1/responses/{id}` until the status leaves `queued` or `in_progress`. `POST /v1/responses/{id}/cancel` deletes the Job and marks the stored response `cancelled`.
+
+This path does not change inference Deployments or vLLM flags. The chart adds a ServiceAccount and Role allowing the gateway to create/delete Jobs in its namespace. Tune `gateway.responsesApiStore.backgroundJobs.ttlSecondsAfterFinished` to control Job retention after completion.

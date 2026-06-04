@@ -12,6 +12,9 @@ spec:
       labels:
         app: {{ include "duihua.fullname" . }}-gateway
     spec:
+      {{- if eq (include "duihua.backgroundJobs.enabled" .) "true" }}
+      serviceAccountName: {{ include "duihua.serviceAccountName" . }}
+      {{- end }}
       containers:
         - name: gateway
           image: "{{ .Values.gateway.image.repository }}:{{ .Values.gateway.image.tag }}"
@@ -34,7 +37,7 @@ spec:
             - name: UPSTREAM_BASE_URL
               value: {{ .Values.gateway.env.upstreamBaseUrl | quote }}
             - name: RESPONSES_API_STORE_ENABLED
-              value: {{ .Values.inference.responsesApiStore.enabled | quote }}
+              value: {{ include "duihua.responsesApiStore.enabled" . | quote }}
             - name: RESPONSE_ID_STORE_URL
               {{ if .Values.valkey.enabled }}
               value: "redis://{{ include "duihua.fullname" . }}-valkey:{{ .Values.valkey.service.port }}"
@@ -45,6 +48,24 @@ spec:
               value: {{ .Values.gateway.env.responseIdStoreKeyPrefix | quote }}
             - name: RESPONSE_ID_STORE_TTL_SECONDS
               value: {{ .Values.gateway.env.responseIdStoreTtlSeconds | quote }}
+            {{- if eq (include "duihua.backgroundJobs.enabled" .) "true" }}
+            - name: RESPONSES_BACKGROUND_JOBS_ENABLED
+              value: "true"
+            - name: BACKGROUND_JOB_IMAGE
+              value: "{{ .Values.gateway.image.repository }}:{{ .Values.gateway.image.tag }}"
+            - name: BACKGROUND_JOB_IMAGE_PULL_POLICY
+              value: {{ .Values.gateway.image.pullPolicy | quote }}
+            - name: BACKGROUND_JOB_SERVICE_ACCOUNT_NAME
+              value: {{ include "duihua.serviceAccountName" . | quote }}
+            - name: BACKGROUND_JOB_TTL_SECONDS_AFTER_FINISHED
+              value: {{ .Values.gateway.responsesApiStore.backgroundJobs.ttlSecondsAfterFinished | quote }}
+            - name: BACKGROUND_JOB_RESOURCES_JSON
+              value: {{ include "duihua.backgroundJob.resources" . | quote }}
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            {{- end }}
             - name: MODEL_UPSTREAMS
               {{ if .Values.inference.enabled }}
               value: "{{- range $index, $model := .Values.inference.models }}{{ if $index }},{{ end }}{{ $model.name }}=http://{{ include "duihua.fullname" $ }}-inference-{{ $index }}-proxy:8080/v1{{- end }}"

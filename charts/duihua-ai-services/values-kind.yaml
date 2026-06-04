@@ -20,6 +20,10 @@ gateway:
     responseIdStoreTtlSeconds: "86400"
     defaultModel: HuggingFaceTB/SmolLM2-135M-Instruct
     upstreamBaseUrl: http://127.0.0.1:9/v1
+  responsesApiStore:
+    enabled: true
+    backgroundJobs:
+      enabled: true
 
 inference:
   enabled: true
@@ -29,8 +33,6 @@ inference:
     pullPolicy: IfNotPresent
   # Additional arguments appended to every vLLM inference container.
   extraArgs: []
-  responsesApiStore:
-    enabled: false
   models:
     - name: HuggingFaceTB/SmolLM2-135M-Instruct
       # Additional arguments appended only for this model's vLLM container.
@@ -68,8 +70,11 @@ inference:
       scaledObjectAnnotations: {}
       annotations: {}
 
+serviceAccount:
+  create: true
+
 valkey:
-  enabled: false
+  enabled: true
   image:
     repository: valkey/valkey
     tag: "9.1.0-alpine"

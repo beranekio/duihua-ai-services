@@ -1,3 +1,5 @@
+mod background;
+
 use std::{
     collections::HashMap,
     env,
@@ -32,6 +34,7 @@ struct AppState {
     client: Client,
     responses_api_store_enabled: bool,
     response_store: Option<ResponseStore>,
+    background_jobs: Option<background::BackgroundJobs>,
 }
 
 #[derive(Clone)]
@@ -46,6 +49,8 @@ struct StoredResponse {
     upstream: String,
     response: Value,
     input: Vec<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pending_upstream_request: Option<Value>,
 }
 
 #[derive(Serialize)]
@@ -157,11 +162,25 @@ fn response_model(response: &Value) -> Option<String> {
         .map(str::to_string)
 }
 
+fn init_rustls_provider() {
+    if rustls::crypto::CryptoProvider::get_default().is_none() {
+        rustls::crypto::aws_lc_rs::default_provider()
+            .install_default()
+            .expect("failed to install rustls crypto provider");
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
+    init_rustls_provider();
+
     let env_filter =
         env::var("RUST_LOG").unwrap_or_else(|_| "info,duihua_gateway=debug".to_string());
     tracing_subscriber::fmt().with_env_filter(env_filter).init();
+
+    if background::is_background_worker_invocation() {
+        return background::run_background_worker().await;
+    }
 
     let bind_addr = env::var("BIND_ADDR").unwrap_or_else(|_| "0.0.0.0:8080".to_string());
     let upstream_base = env::var("UPSTREAM_BASE_URL")
@@ -178,6 +197,11 @@ async fn main() -> Result<()> {
     } else {
         None
     };
+    let background_jobs = if responses_api_store_enabled {
+        background::background_jobs_from_env().await?
+    } else {
+        None
+    };
 
     let state = Arc::new(AppState {
         upstream_base,
@@ -187,6 +211,7 @@ async fn main() -> Result<()> {
         client: Client::new(),
         responses_api_store_enabled,
         response_store,
+        background_jobs,
     });
 
     let app = Router::new()
@@ -218,7 +243,7 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-async fn response_store_from_env() -> Result<ResponseStore> {
+pub(crate) async fn response_store_from_env() -> Result<ResponseStore> {
     let url =
         env::var("RESPONSE_ID_STORE_URL").unwrap_or_else(|_| "redis://valkey:6379".to_string());
     let key_prefix =
@@ -321,18 +346,39 @@ async fn chat_completions(
     .await
 }
 
+fn is_background_request(request: &ResponsesRequest) -> bool {
+    request.extra.get("background").and_then(Value::as_bool) == Some(true)
+}
+
 async fn responses(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Json(mut payload): Json<ResponsesRequest>,
 ) -> Response {
     let persist_response = state.responses_api_store_enabled && should_store_response(&payload);
-    if persist_response && payload.extra.get("background").and_then(Value::as_bool) == Some(true) {
-        return (
-            StatusCode::NOT_IMPLEMENTED,
-            "background responses are not supported by the gateway-owned response store",
-        )
-            .into_response();
+    let background = is_background_request(&payload);
+    if background {
+        if !persist_response {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: ErrorBody {
+                        message: "Background responses require store=true.".to_string(),
+                        error_type: "invalid_request_error",
+                        param: "store",
+                        code: 400,
+                    },
+                }),
+            )
+                .into_response();
+        }
+        if payload.extra.get("stream").and_then(Value::as_bool) == Some(true) {
+            return (
+                StatusCode::NOT_IMPLEMENTED,
+                "streaming background responses are not supported",
+            )
+                .into_response();
+        }
     }
 
     let (upstream, input) = if let Some(previous_response_id) = payload.previous_response_id.take()
@@ -365,7 +411,44 @@ async fn responses(
     if state.responses_api_store_enabled {
         disable_upstream_response_store(&mut payload);
     }
+
+    if background {
+        return create_background_response(state, headers, payload, upstream, input).await;
+    }
+
     proxy_response_request(state, headers, payload, upstream, input, persist_response).await
+}
+
+async fn create_background_response(
+    state: Arc<AppState>,
+    headers: HeaderMap,
+    payload: ResponsesRequest,
+    upstream: String,
+    input: Vec<Value>,
+) -> Response {
+    let _ = headers;
+    let model = payload
+        .model
+        .clone()
+        .unwrap_or_else(|| state.default_model.clone());
+    let response_id = background::generate_response_id();
+    let request_value = serde_json::to_value(&payload).unwrap_or(Value::Null);
+    let upstream_request = background::build_upstream_request(&request_value);
+    let queued_response = background::build_queued_response(&response_id, &model, &request_value);
+
+    match background::enqueue_background_response(
+        state.as_ref(),
+        response_id,
+        upstream,
+        input,
+        upstream_request,
+        queued_response.clone(),
+    )
+    .await
+    {
+        Ok(()) => (StatusCode::OK, Json(queued_response)).into_response(),
+        Err(response) => response,
+    }
 }
 
 async fn response_input_tokens(
@@ -444,21 +527,43 @@ async fn cancel_response(
     Path(response_id): Path<String>,
 ) -> Response {
     let _ = headers;
-    let stored = match load_response(state.as_ref(), &response_id).await {
+    let mut stored = match load_response(state.as_ref(), &response_id).await {
         Ok(stored) => stored,
         Err(response) => return response,
     };
-    if stored.response.get("status").and_then(Value::as_str) == Some("completed") {
+    let status = stored.response.get("status").and_then(Value::as_str);
+    if status == Some("completed") {
         return (
             StatusCode::BAD_REQUEST,
             Json(json!({"error": {"message": "Cannot cancel a synchronous response.", "type": "invalid_request_error", "param": "response_id", "code": 400}})),
         ).into_response();
     }
-    (
-        StatusCode::NOT_IMPLEMENTED,
-        "cancelling stored background responses is not supported",
-    )
-        .into_response()
+    if status == Some("cancelled") {
+        return Json(stored.response).into_response();
+    }
+
+    if let Some(background_jobs) = &state.background_jobs {
+        if let Err(e) = background_jobs.cancel(&response_id).await {
+            error!("failed to cancel background job for {response_id}: {e}");
+            return (
+                StatusCode::BAD_GATEWAY,
+                "failed to cancel background response job",
+            )
+                .into_response();
+        }
+    }
+
+    let cancelled = background::build_cancelled_response(&stored, &response_id);
+    stored.response = cancelled.clone();
+    stored.pending_upstream_request = None;
+    if let Some(response_store) = &state.response_store {
+        if let Err(e) = response_store.store(&response_id, &stored).await {
+            error!("failed to persist cancelled background response {response_id}: {e}");
+            return (StatusCode::BAD_GATEWAY, "response id store write failed").into_response();
+        }
+    }
+
+    Json(cancelled).into_response()
 }
 
 async fn list_response_input_items(
@@ -649,6 +754,7 @@ async fn store_response(state: &AppState, upstream: String, response: Value, inp
         upstream,
         response,
         input,
+        pending_upstream_request: None,
     };
     if let Err(e) = response_store.store(&response_id, &stored).await {
         error!("failed to store response {response_id}: {e}");
@@ -903,6 +1009,7 @@ mod tests {
             client: Client::new(),
             responses_api_store_enabled: false,
             response_store: None,
+            background_jobs: None,
         };
 
         assert_eq!(
@@ -938,6 +1045,7 @@ mod tests {
             client: Client::new(),
             responses_api_store_enabled: false,
             response_store: None,
+            background_jobs: None,
         });
         let tracker = ResponseTracker::new(state, "http://default:8000/v1".to_string(), Vec::new());
 
@@ -963,6 +1071,7 @@ mod tests {
                 "output": [{"role": "assistant", "content": "prior answer"}]
             }),
             input: vec![json!({"role": "user", "content": "prior question"})],
+            pending_upstream_request: None,
         };
 
         assert_eq!(

@@ -1,0 +1,22 @@
+{{- if and .Values.gateway.responsesApiStore.enabled .Values.gateway.responsesApiStore.backgroundJobs.enabled }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "duihua.fullname" . }}-gateway-background
+rules:
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["create", "get", "list", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "duihua.fullname" . }}-gateway-background
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "duihua.fullname" . }}-gateway-background
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "duihua.serviceAccountName" . }}
+{{- end }}

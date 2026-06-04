@@ -72,25 +72,27 @@ Response persistence is optional and disabled by default. When disabled, follow-
 To enable it with the chart-managed Valkey instance:
 
 ```yaml
-inference:
+gateway:
   responsesApiStore:
     enabled: true
+  env:
+    responseIdStoreKeyPrefix: duihua:responses
+    responseIdStoreTtlSeconds: "86400"
+valkey:
+  enabled: true
+inference:
   autoscaling:
     default:
       replicas:
         min: 0
         max: 1
-valkey:
-  enabled: true
-gateway:
-  env:
-    responseIdStoreKeyPrefix: duihua:responses
-    responseIdStoreTtlSeconds: "86400"
 ```
 
 To use an external Valkey/Redis-compatible service instead, keep `valkey.enabled=false` and set `gateway.env.responseIdStoreUrl`.
 
-For local Docker Compose, set `RESPONSES_API_STORE_ENABLED=true` when starting the stack to exercise persisted follow-up Responses API calls. Streaming responses are persisted after their `response.completed` event. Background responses are not currently supported by the gateway-owned store.
+For local Docker Compose, set `RESPONSES_API_STORE_ENABLED=true` when starting the stack to exercise persisted follow-up Responses API calls. Streaming responses are persisted after their `response.completed` event.
+
+With the Helm chart, `background=true` Responses API requests are executed asynchronously by Kubernetes Jobs (same gateway image, synchronous upstream call, result written to Valkey). Enable both `gateway.responsesApiStore.enabled=true` and `valkey.enabled=true` (or an external response store URL). Background jobs are on by default when the store is enabled (`gateway.responsesApiStore.backgroundJobs.enabled`). The kind workflow (`values-kind.yaml`) enables the store, Valkey, and background jobs for local testing.
 
 ## Cloud-provider independence
 

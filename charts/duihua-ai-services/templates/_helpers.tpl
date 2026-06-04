@@ -9,3 +9,11 @@
 {{- printf "%s-%s" .Release.Name (include "duihua.name" .) | trunc 63 | trimSuffix "-" -}}
 {{- end -}}
 {{- end -}}
+
+{{- define "duihua.serviceAccountName" -}}
+{{- if .Values.serviceAccount.create -}}
+{{- default (include "duihua.fullname" .) .Values.serviceAccount.name -}}
+{{- else -}}
+{{- default "default" .Values.serviceAccount.name -}}
+{{- end -}}
+{{- end -}}

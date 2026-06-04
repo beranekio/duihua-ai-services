@@ -20,6 +20,16 @@ gateway:
     responseIdStoreTtlSeconds: "86400"
     defaultModel: google/gemma-4-31B-it
     upstreamBaseUrl: http://vllm:8000/v1
+  responsesApiStore:
+    # Persist completed Responses API objects and conversation input in Valkey
+    # from the gateway. This does not enable vLLM's in-memory response store, so
+    # inference deployments may use multiple replicas and scale to zero.
+    enabled: false
+    backgroundJobs:
+      # Run background=true Responses API requests as Kubernetes Jobs that call
+      # upstream inference synchronously and persist the completed response in Valkey.
+      enabled: true
+      ttlSecondsAfterFinished: 600
 
 inference:
   enabled: true
@@ -44,11 +54,6 @@ inference:
           memory: 16Gi
           nvidia.com/gpu: "1"
   resources: {}
-  responsesApiStore:
-    # Persist completed Responses API objects and conversation input in Valkey
-    # from the gateway. This does not enable vLLM's in-memory response store, so
-    # inference deployments may use multiple replicas and scale to zero.
-    enabled: false
   autoscaling:
     # Requires KEDA + KEDA HTTP add-on installed in the cluster.
     # Every model uses an InterceptorRoute + ScaledObject pair and starts from replicas.min.

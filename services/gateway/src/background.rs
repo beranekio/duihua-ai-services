@@ -63,7 +63,7 @@ pub async fn run_background_worker() -> Result<()> {
     let upstream_api_key = env::var("UPSTREAM_API_KEY").ok();
     let response_store = response_store_from_env().await?;
 
-    let Some(mut stored) = response_store.load(&response_id).await? else {
+    let Some(stored) = response_store.load(&response_id).await? else {
         return Ok(());
     };
     if !should_worker_persist(&stored) {

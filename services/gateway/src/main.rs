@@ -157,6 +157,10 @@ fn disable_upstream_response_store(request: &mut ResponsesRequest) {
     request.extra["store"] = Value::Bool(false);
 }
 
+fn should_persist_gateway_response(store_enabled: bool, request: &ResponsesRequest) -> bool {
+    store_enabled && should_store_response(request)
+}
+
 fn response_model(response: &Value) -> Option<String> {
     response
         .get("model")
@@ -424,11 +428,12 @@ async fn responses(
         )
     };
 
+    let persist_response =
+        should_persist_gateway_response(state.responses_api_store_enabled, &payload);
+
     if state.responses_api_store_enabled {
         disable_upstream_response_store(&mut payload);
     }
-
-    let persist_response = state.responses_api_store_enabled && should_store_response(&payload);
 
     if background {
         return create_background_response(state, headers, payload, upstream, input).await;
@@ -1150,6 +1155,27 @@ mod tests {
         }))
         .expect("valid responses request");
         assert!(!should_store_response(&unpersisted_request));
+    }
+
+    #[test]
+    fn preserves_gateway_persistence_decision_before_disabling_upstream_store() {
+        let mut default_request = serde_json::from_value::<ResponsesRequest>(json!({
+            "input": "persist by default"
+        }))
+        .expect("valid responses request");
+
+        let persist_response = should_persist_gateway_response(true, &default_request);
+        disable_upstream_response_store(&mut default_request);
+
+        assert!(persist_response);
+        assert!(!should_store_response(&default_request));
+
+        let unpersisted_request = serde_json::from_value::<ResponsesRequest>(json!({
+            "input": "do not persist",
+            "store": false
+        }))
+        .expect("valid responses request");
+        assert!(!should_persist_gateway_response(true, &unpersisted_request));
     }
 
     #[test]

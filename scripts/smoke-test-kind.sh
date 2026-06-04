@@ -77,7 +77,7 @@ poll_until_terminal_status() {
     local body
     body="$(get_response_status "${response_id}")"
     status="$(json_get "${body}" 'payload["status"]')"
-    echo "poll ${attempt}: ${status}"
+    echo "poll ${attempt}: ${status}" >&2
     case "${status}" in
       completed | failed | cancelled)
         echo "${status}"
@@ -176,8 +176,12 @@ test_background_delete_tombstone() {
   response_id="$(json_get "${body}" 'payload["id"]')"
   sleep 1
 
-  curl -sf -X DELETE "${GATEWAY_BASE_URL}/v1/responses/${response_id}" \
-    | python3 -c 'import json, sys; assert payload["deleted"] is True'
+  local deleted_body
+  deleted_body="$(curl -sf -X DELETE "${GATEWAY_BASE_URL}/v1/responses/${response_id}")"
+  if [[ "$(json_get "${deleted_body}" 'payload["deleted"]')" != "True" ]]; then
+    echo "expected delete to return deleted=true, got: ${deleted_body}" >&2
+    exit 1
+  fi
 
   for attempt in $(seq 1 "${DELETE_POLL_ATTEMPTS}"); do
     local code

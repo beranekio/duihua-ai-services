@@ -51,6 +51,8 @@ struct StoredResponse {
     input: Vec<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pending_upstream_request: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    upstream_authorization: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -355,10 +357,24 @@ async fn responses(
     headers: HeaderMap,
     Json(mut payload): Json<ResponsesRequest>,
 ) -> Response {
-    let persist_response = state.responses_api_store_enabled && should_store_response(&payload);
     let background = is_background_request(&payload);
     if background {
-        if !persist_response {
+        if !state.responses_api_store_enabled {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(ErrorResponse {
+                    error: ErrorBody {
+                        message: "Background responses require the gateway-owned response store."
+                            .to_string(),
+                        error_type: "invalid_request_error",
+                        param: "background",
+                        code: 503,
+                    },
+                }),
+            )
+                .into_response();
+        }
+        if !should_store_response(&payload) {
             return (
                 StatusCode::BAD_REQUEST,
                 Json(ErrorResponse {
@@ -412,6 +428,8 @@ async fn responses(
         disable_upstream_response_store(&mut payload);
     }
 
+    let persist_response = state.responses_api_store_enabled && should_store_response(&payload);
+
     if background {
         return create_background_response(state, headers, payload, upstream, input).await;
     }
@@ -426,7 +444,10 @@ async fn create_background_response(
     upstream: String,
     input: Vec<Value>,
 ) -> Response {
-    let _ = headers;
+    let upstream_authorization = headers
+        .get("authorization")
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
     let model = payload
         .model
         .clone()
@@ -443,6 +464,7 @@ async fn create_background_response(
         input,
         upstream_request,
         queued_response.clone(),
+        upstream_authorization,
     )
     .await
     {
@@ -508,15 +530,14 @@ async fn delete_response(
     Path(response_id): Path<String>,
 ) -> Response {
     let _ = headers;
-    let _stored = match load_response(state.as_ref(), &response_id).await {
+    let stored = match load_stored_response(state.as_ref(), &response_id).await {
         Ok(stored) => stored,
         Err(response) => return response,
     };
-    if let Some(response_store) = &state.response_store {
-        if let Err(e) = response_store.delete(&response_id).await {
-            error!("failed to delete response {response_id}: {e}");
-            return (StatusCode::BAD_GATEWAY, "response store delete failed").into_response();
-        }
+    if let Err(response) =
+        background::finalize_background_deletion(state.as_ref(), &response_id, &stored).await
+    {
+        return response;
     }
     Json(json!({"id": response_id, "object": "response.deleted", "deleted": true})).into_response()
 }
@@ -527,19 +548,27 @@ async fn cancel_response(
     Path(response_id): Path<String>,
 ) -> Response {
     let _ = headers;
-    let mut stored = match load_response(state.as_ref(), &response_id).await {
+    let mut stored = match load_stored_response(state.as_ref(), &response_id).await {
         Ok(stored) => stored,
         Err(response) => return response,
     };
-    let status = stored.response.get("status").and_then(Value::as_str);
-    if status == Some("completed") {
+    let status = background::stored_response_status(&stored);
+    if matches!(status, Some("completed" | "failed" | "cancelled")) {
+        let message = if status == Some("completed")
+            && stored.response.get("background").and_then(Value::as_bool) != Some(true)
+        {
+            "Cannot cancel a synchronous response.".to_string()
+        } else {
+            format!(
+                "Cannot cancel a response that is already {}.",
+                status.unwrap_or("unknown")
+            )
+        };
         return (
             StatusCode::BAD_REQUEST,
-            Json(json!({"error": {"message": "Cannot cancel a synchronous response.", "type": "invalid_request_error", "param": "response_id", "code": 400}})),
-        ).into_response();
-    }
-    if status == Some("cancelled") {
-        return Json(stored.response).into_response();
+            Json(json!({"error": {"message": message, "type": "invalid_request_error", "param": "response_id", "code": 400}})),
+        )
+            .into_response();
     }
 
     if let Some(background_jobs) = &state.background_jobs {
@@ -556,6 +585,7 @@ async fn cancel_response(
     let cancelled = background::build_cancelled_response(&stored, &response_id);
     stored.response = cancelled.clone();
     stored.pending_upstream_request = None;
+    stored.upstream_authorization = None;
     if let Some(response_store) = &state.response_store {
         if let Err(e) = response_store.store(&response_id, &stored).await {
             error!("failed to persist cancelled background response {response_id}: {e}");
@@ -609,7 +639,7 @@ fn upstream_for_model<'a>(state: &'a AppState, model: &str) -> &'a str {
         .unwrap_or(state.upstream_base.as_str())
 }
 
-async fn load_response(
+async fn load_stored_response(
     state: &AppState,
     response_id: &str,
 ) -> std::result::Result<StoredResponse, Response> {
@@ -623,13 +653,26 @@ async fn load_response(
     };
 
     match response_store.load(response_id).await {
-        Ok(Some(response)) => Ok(response),
+        Ok(Some(response)) => {
+            if background::stored_response_status(&response) == Some("deleted") {
+                Err(response_not_found(response_id))
+            } else {
+                Ok(response)
+            }
+        }
         Ok(None) => Err(response_not_found(response_id)),
         Err(e) => {
             error!("failed to read response id store for {response_id}: {e}");
             Err((StatusCode::BAD_GATEWAY, "response id store read failed").into_response())
         }
     }
+}
+
+async fn load_response(
+    state: &AppState,
+    response_id: &str,
+) -> std::result::Result<StoredResponse, Response> {
+    load_stored_response(state, response_id).await
 }
 
 async fn proxy_response_request<T: Serialize>(
@@ -755,6 +798,7 @@ async fn store_response(state: &AppState, upstream: String, response: Value, inp
         response,
         input,
         pending_upstream_request: None,
+        upstream_authorization: None,
     };
     if let Err(e) = response_store.store(&response_id, &stored).await {
         error!("failed to store response {response_id}: {e}");
@@ -1072,6 +1116,7 @@ mod tests {
             }),
             input: vec![json!({"role": "user", "content": "prior question"})],
             pending_upstream_request: None,
+            upstream_authorization: None,
         };
 
         assert_eq!(

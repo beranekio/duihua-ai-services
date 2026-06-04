@@ -1,6 +1,7 @@
 use std::env;
 
 use anyhow::{Context, Result};
+use axum::response::IntoResponse;
 use k8s_openapi::{
     api::{
         batch::v1::{Job, JobSpec},
@@ -11,7 +12,7 @@ use k8s_openapi::{
     apimachinery::pkg::apis::meta::v1::ObjectMeta,
 };
 use kube::{
-    api::{DeleteParams, PostParams},
+    api::{DeleteParams, PostParams, PropagationPolicy},
     Api, Client,
 };
 use reqwest::Client as HttpClient;
@@ -35,6 +36,25 @@ pub fn is_background_worker_invocation() -> bool {
     env::args().nth(1).as_deref() == Some(WORKER_SUBCOMMAND)
 }
 
+pub fn stored_response_status(stored: &StoredResponse) -> Option<&str> {
+    stored.response.get("status").and_then(Value::as_str)
+}
+
+pub fn is_in_flight_background(stored: &StoredResponse) -> bool {
+    stored.pending_upstream_request.is_some()
+        || matches!(
+            stored_response_status(stored),
+            Some("queued") | Some("in_progress")
+        )
+}
+
+fn should_worker_persist(stored: &StoredResponse) -> bool {
+    !matches!(
+        stored_response_status(stored),
+        Some("cancelled") | Some("deleted")
+    )
+}
+
 pub async fn run_background_worker() -> Result<()> {
     let response_id =
         env::var("BACKGROUND_RESPONSE_ID").context("BACKGROUND_RESPONSE_ID is required")?;
@@ -42,9 +62,13 @@ pub async fn run_background_worker() -> Result<()> {
     let response_store = response_store_from_env().await?;
 
     let Some(mut stored) = response_store.load(&response_id).await? else {
-        anyhow::bail!("stored response {response_id} not found");
+        return Ok(());
     };
+    if !should_worker_persist(&stored) {
+        return Ok(());
+    }
 
+    let upstream_authorization = stored.upstream_authorization.clone();
     let upstream_request = stored
         .pending_upstream_request
         .take()
@@ -53,12 +77,19 @@ pub async fn run_background_worker() -> Result<()> {
     let input = stored.input.clone();
 
     stored.response = with_response_status(&stored.response, "in_progress");
-    response_store.store(&response_id, &stored).await?;
+    stored.upstream_authorization = None;
+    if should_worker_persist(&stored) {
+        response_store.store(&response_id, &stored).await?;
+    } else {
+        return Ok(());
+    }
 
     let http = HttpClient::new();
     let url = format!("{upstream}/responses");
     let mut req = http.post(&url).json(&upstream_request);
-    if let Some(api_key) = upstream_api_key {
+    if let Some(authorization) = upstream_authorization.as_deref() {
+        req = req.header("authorization", authorization);
+    } else if let Some(api_key) = upstream_api_key {
         req = req.bearer_auth(api_key);
     }
 
@@ -72,7 +103,7 @@ pub async fn run_background_worker() -> Result<()> {
             if !status.is_success() {
                 let message = String::from_utf8_lossy(&body);
                 mark_background_failed(&response_store, &response_id, &message).await?;
-                anyhow::bail!("upstream background response failed with status {status}");
+                return Ok(());
             }
 
             let Ok(mut response) = serde_json::from_slice::<Value>(&body) else {
@@ -82,7 +113,7 @@ pub async fn run_background_worker() -> Result<()> {
                     "upstream returned invalid JSON",
                 )
                 .await?;
-                anyhow::bail!("upstream returned invalid JSON for background response");
+                return Ok(());
             };
             response["id"] = Value::String(response_id.clone());
             response["background"] = Value::Bool(true);
@@ -90,21 +121,42 @@ pub async fn run_background_worker() -> Result<()> {
                 response["status"] = Value::String("completed".to_string());
             }
 
-            let stored = StoredResponse {
-                upstream,
-                response,
-                input,
-                pending_upstream_request: None,
-            };
-            response_store.store(&response_id, &stored).await?;
+            store_background_completion(
+                &response_store,
+                &response_id,
+                StoredResponse {
+                    upstream,
+                    response,
+                    input,
+                    pending_upstream_request: None,
+                    upstream_authorization: None,
+                },
+            )
+            .await?;
         }
         Err(e) => {
             mark_background_failed(&response_store, &response_id, &e.to_string()).await?;
-            return Err(e).context("upstream background request failed");
         }
     }
 
     Ok(())
+}
+
+async fn store_background_completion(
+    response_store: &ResponseStore,
+    response_id: &str,
+    stored: StoredResponse,
+) -> Result<()> {
+    let Some(current) = response_store.load(response_id).await? else {
+        return Ok(());
+    };
+    if !should_worker_persist(&current) {
+        return Ok(());
+    }
+    response_store
+        .store(response_id, &stored)
+        .await
+        .context("failed to store completed background response")
 }
 
 async fn mark_background_failed(
@@ -115,6 +167,9 @@ async fn mark_background_failed(
     let Some(mut stored) = response_store.load(response_id).await? else {
         return Ok(());
     };
+    if !should_worker_persist(&stored) {
+        return Ok(());
+    }
     stored.response = json!({
         "id": response_id,
         "object": "response",
@@ -126,7 +181,67 @@ async fn mark_background_failed(
         }
     });
     stored.pending_upstream_request = None;
+    stored.upstream_authorization = None;
     response_store.store(response_id, &stored).await?;
+    Ok(())
+}
+
+pub async fn finalize_background_deletion(
+    state: &AppState,
+    response_id: &str,
+    stored: &StoredResponse,
+) -> Result<(), axum::response::Response> {
+    let Some(response_store) = &state.response_store else {
+        error!("responses API store is enabled but no response store is configured");
+        return Err((
+            axum::http::StatusCode::BAD_GATEWAY,
+            "response id store unavailable",
+        )
+            .into_response());
+    };
+
+    if is_in_flight_background(stored) {
+        if let Some(background_jobs) = &state.background_jobs {
+            if let Err(e) = background_jobs.cancel(response_id).await {
+                error!("failed to cancel background job for {response_id}: {e}");
+                return Err((
+                    axum::http::StatusCode::BAD_GATEWAY,
+                    "failed to cancel background response job",
+                )
+                    .into_response());
+            }
+        }
+
+        let mut tombstone = stored.clone();
+        tombstone.response = json!({
+            "id": response_id,
+            "object": "response",
+            "status": "deleted",
+            "background": true,
+            "deleted": true
+        });
+        tombstone.pending_upstream_request = None;
+        tombstone.upstream_authorization = None;
+        if let Err(e) = response_store.store(response_id, &tombstone).await {
+            error!("failed to tombstone deleted background response {response_id}: {e}");
+            return Err((
+                axum::http::StatusCode::BAD_GATEWAY,
+                "response id store write failed",
+            )
+                .into_response());
+        }
+        return Ok(());
+    }
+
+    if let Err(e) = response_store.delete(response_id).await {
+        error!("failed to delete response {response_id}: {e}");
+        return Err((
+            axum::http::StatusCode::BAD_GATEWAY,
+            "response store delete failed",
+        )
+            .into_response());
+    }
+
     Ok(())
 }
 
@@ -182,7 +297,11 @@ impl BackgroundJobs {
     pub async fn cancel(&self, response_id: &str) -> Result<()> {
         let jobs: Api<Job> = Api::namespaced(self.client.clone(), &self.namespace);
         let name = background_job_name(response_id);
-        if jobs.delete(&name, &DeleteParams::default()).await.is_err() {
+        let delete_params = DeleteParams {
+            propagation_policy: Some(PropagationPolicy::Background),
+            ..Default::default()
+        };
+        if jobs.delete(&name, &delete_params).await.is_err() {
             // Job may already have finished; cancellation still updates stored state.
         }
         Ok(())
@@ -365,6 +484,7 @@ pub async fn enqueue_background_response(
     input: Vec<Value>,
     upstream_request: Value,
     queued_response: Value,
+    upstream_authorization: Option<String>,
 ) -> Result<(), axum::response::Response> {
     let Some(response_store) = &state.response_store else {
         error!("responses API store is enabled but no response store is configured");
@@ -380,6 +500,7 @@ pub async fn enqueue_background_response(
         response: queued_response.clone(),
         input,
         pending_upstream_request: Some(upstream_request),
+        upstream_authorization,
     };
     if let Err(e) = response_store.store(&response_id, &stored).await {
         error!("failed to store queued background response {response_id}: {e}");
@@ -433,8 +554,6 @@ fn background_worker_store_env() -> Vec<(&'static str, String)> {
     env
 }
 
-use axum::response::IntoResponse;
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -464,5 +583,47 @@ mod tests {
                 "store": false
             })
         );
+    }
+
+    #[test]
+    fn detects_in_flight_background_responses() {
+        let queued = StoredResponse {
+            upstream: "http://model".to_string(),
+            response: json!({"status": "queued", "background": true}),
+            input: vec![],
+            pending_upstream_request: Some(json!({"input": "hi"})),
+            upstream_authorization: None,
+        };
+        assert!(is_in_flight_background(&queued));
+
+        let completed = StoredResponse {
+            upstream: "http://model".to_string(),
+            response: json!({"status": "completed", "background": true}),
+            input: vec![],
+            pending_upstream_request: None,
+            upstream_authorization: None,
+        };
+        assert!(!is_in_flight_background(&completed));
+    }
+
+    #[test]
+    fn worker_skips_terminal_statuses() {
+        let cancelled = StoredResponse {
+            upstream: "http://model".to_string(),
+            response: json!({"status": "cancelled", "background": true}),
+            input: vec![],
+            pending_upstream_request: None,
+            upstream_authorization: None,
+        };
+        assert!(!should_worker_persist(&cancelled));
+
+        let deleted = StoredResponse {
+            upstream: "http://model".to_string(),
+            response: json!({"status": "deleted", "background": true}),
+            input: vec![],
+            pending_upstream_request: None,
+            upstream_authorization: None,
+        };
+        assert!(!should_worker_persist(&deleted));
     }
 }

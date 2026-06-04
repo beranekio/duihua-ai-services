@@ -12,7 +12,7 @@ spec:
       labels:
         app: {{ include "duihua.fullname" . }}-gateway
     spec:
-      {{- if include "duihua.backgroundJobs.enabled" . }}
+      {{- if eq (include "duihua.backgroundJobs.enabled" .) "true" }}
       serviceAccountName: {{ include "duihua.serviceAccountName" . }}
       {{- end }}
       containers:
@@ -48,7 +48,7 @@ spec:
               value: {{ .Values.gateway.env.responseIdStoreKeyPrefix | quote }}
             - name: RESPONSE_ID_STORE_TTL_SECONDS
               value: {{ .Values.gateway.env.responseIdStoreTtlSeconds | quote }}
-            {{- if include "duihua.backgroundJobs.enabled" . }}
+            {{- if eq (include "duihua.backgroundJobs.enabled" .) "true" }}
             - name: RESPONSES_BACKGROUND_JOBS_ENABLED
               value: "true"
             - name: BACKGROUND_JOB_IMAGE

@@ -73,18 +73,25 @@ pub async fn run_background_worker() -> Result<()> {
     let upstream_authorization = stored.upstream_authorization.clone();
     let upstream_request = stored
         .pending_upstream_request
-        .take()
+        .clone()
         .context("background response is missing pending upstream request")?;
     let upstream = stored.upstream.clone();
     let input = stored.input.clone();
 
-    stored.response = with_response_status(&stored.response, "in_progress");
-    stored.upstream_authorization = None;
-    if should_worker_persist(&stored) {
-        response_store.store(&response_id, &stored).await?;
-    } else {
+    let Some(mut stored) = response_store.load(&response_id).await? else {
+        return Ok(());
+    };
+    if !should_worker_persist(&stored) {
         return Ok(());
     }
+    if stored.pending_upstream_request.is_none() {
+        return Ok(());
+    }
+
+    stored.pending_upstream_request = None;
+    stored.response = with_response_status(&stored.response, "in_progress");
+    stored.upstream_authorization = None;
+    response_store.store(&response_id, &stored).await?;
 
     let http = HttpClient::new();
     let url = format!("{upstream}/responses");

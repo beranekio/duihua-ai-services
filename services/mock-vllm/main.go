@@ -39,11 +39,7 @@ func envFloat(key string, fallback float64) float64 {
 	return f
 }
 
-func shouldDelay(payload any) bool {
-	raw, err := json.Marshal(payload)
-	if err != nil {
-		return false
-	}
+func shouldDelay(raw []byte) bool {
 	text := strings.ToLower(string(raw))
 	for _, marker := range slowMarkers {
 		if strings.Contains(text, marker) {
@@ -51,6 +47,10 @@ func shouldDelay(payload any) bool {
 		}
 	}
 	return false
+}
+
+func slowDelay() time.Duration {
+	return time.Duration(slowDelaySeconds * float64(time.Second))
 }
 
 func extractModel(payload map[string]any) string {
@@ -139,8 +139,8 @@ func (s *server) handlePost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if shouldDelay(payload) {
-		time.Sleep(time.Duration(slowDelaySeconds * float64(time.Second)))
+	if shouldDelay(raw) {
+		time.Sleep(slowDelay())
 	}
 
 	switch r.URL.Path {
@@ -196,7 +196,15 @@ func main() {
 	addr := host + ":" + port
 
 	log.Printf("mock-vllm listening on %s (default_model=%s)", addr, defaultModel)
-	if err := http.ListenAndServe(addr, &server{}); err != nil {
+	srv := &http.Server{
+		Addr:              addr,
+		Handler:           &server{},
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      slowDelay() + 10*time.Second,
+		IdleTimeout:       60 * time.Second,
+	}
+	if err := srv.ListenAndServe(); err != nil {
 		log.Fatal(err)
 	}
 }

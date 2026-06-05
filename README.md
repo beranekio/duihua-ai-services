@@ -187,7 +187,8 @@ curl http://127.0.0.1:8080/v1/responses \
 ```
 
 Useful environment variables:
-- `CLUSTER_NAME` (default: `duihua-local`)
+- `CLUSTER_NAME` (default: `duihua-local`; `scripts/build-and-load-images.sh` and `scripts/deploy-kind.sh` default `KUBECTL_CONTEXT` to `kind-${CLUSTER_NAME}`)
+- `KUBECTL_CONTEXT` (optional override for gateway restart/status in those scripts)
 - `KIND_CONFIG` (default: `kind/cluster.yaml`)
 - `RELEASE_NAME` (default: `duihua`)
 - `NAMESPACE` (default: `duihua`)

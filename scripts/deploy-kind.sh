@@ -20,8 +20,7 @@ helm upgrade --install "${RELEASE_NAME}" "${CHART_PATH}" \
   --set gateway.image.tag="${GATEWAY_IMAGE_TAG}" \
   --set inference.enabled="${INFERENCE_ENABLED}"
 
-echo "Checking rollout status for gateway deployment..."
-kubectl rollout status deployment/"${RELEASE_NAME}"-duihua-ai-services-gateway -n "${NAMESPACE}" --timeout="${TIMEOUT}"
+"${ROOT_DIR}/scripts/restart-gateway-deployment.sh"
 
 if [[ "${INFERENCE_ENABLED}" == "true" ]]; then
   echo "Checking rollout status for inference deployments..."

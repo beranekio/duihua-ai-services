@@ -20,7 +20,11 @@ use reqwest::Client as HttpClient;
 use serde_json::{json, Value};
 use tracing::error;
 
-use crate::{response_store_from_env, AppState, ResponseStore, StoredResponse};
+use crate::{
+    config::{parse_bool_env, response_store_from_env},
+    state::AppState,
+    store::{ResponseStore, StoredResponse},
+};
 
 const WORKER_SUBCOMMAND: &str = "background-worker";
 
@@ -550,17 +554,6 @@ fn sanitize_label_value(value: &str) -> String {
         })
         .take(63)
         .collect()
-}
-
-fn parse_bool_env(name: &str, default: bool) -> bool {
-    env::var(name)
-        .ok()
-        .and_then(|value| match value.to_ascii_lowercase().as_str() {
-            "1" | "true" | "yes" | "on" => Some(true),
-            "0" | "false" | "no" | "off" => Some(false),
-            _ => None,
-        })
-        .unwrap_or(default)
 }
 
 pub async fn enqueue_background_response(

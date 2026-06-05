@@ -22,7 +22,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: mock-vllm
-          image: duihua-mock-vllm:local
+          image: ghcr.io/beranekio/mock-vllm:latest
           imagePullPolicy: IfNotPresent
           securityContext:
             allowPrivilegeEscalation: false

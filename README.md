@@ -200,10 +200,11 @@ Useful environment variables:
 - `KEDA_NAMESPACE` (default: `keda`)
 - `GATEWAY_BASE_URL` (default: `http://127.0.0.1:8080`, used by `scripts/smoke-test-kind.sh`)
 - `DEFAULT_MODEL` (default: `HuggingFaceTB/SmolLM2-135M-Instruct`, used by `scripts/smoke-test-kind.sh`)
+- `MOCK_VLLM_IMAGE` (default: `ghcr.io/beranekio/mock-vllm:latest`, used by CI mock upstream scripts)
 
 ## CI
 
 - **Validate** (`.github/workflows/validate.yml`): Runs on PRs and pushes to `main`. Performs Rust formatting/clippy/tests, Hadolint on the gateway Dockerfile, `helm lint`, and `helm template` rendering.
-- **Kind Integration** (`.github/workflows/kind-integration.yml`): On PRs/pushes that touch the chart, kind assets, scripts, gateway, or mock-vllm (manual trigger also available). Creates a kind cluster (`duihua-ci`), runs `scripts/ci-kind-integration.sh` (KEDA, gateway + mock-vllm images, Helm deploy with `values-kind-ci.yaml`, `scripts/smoke-test-kind.sh`).
+- **Kind Integration** (`.github/workflows/kind-integration.yml`): On PRs/pushes that touch the chart, kind assets, scripts, or gateway (manual trigger also available). Creates a kind cluster (`duihua-ci`), runs `scripts/ci-kind-integration.sh` (KEDA, gateway image build, `ghcr.io/beranekio/mock-vllm:latest` upstream, Helm deploy with `values-kind-ci.yaml`, `scripts/smoke-test-kind.sh`).
 
-CI uses mock-vllm instead of the bundled vLLM image. Local kind workflows still use `values-kind.yaml` with real inference via `scripts/kind-local-up.sh`.
+CI uses the published [mock-vllm](https://github.com/beranekio/mock-vllm) image (`ghcr.io/beranekio/mock-vllm:latest`) instead of the bundled vLLM inference stack. Local kind workflows still use `values-kind.yaml` with real inference via `scripts/kind-local-up.sh`.

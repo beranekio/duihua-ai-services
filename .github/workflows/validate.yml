@@ -57,11 +57,6 @@ jobs:
         with:
           dockerfile: services/gateway/Dockerfile
 
-      - name: Lint mock-vllm Dockerfile
-        uses: hadolint/hadolint-action@v3.3.0
-        with:
-          dockerfile: services/mock-vllm/Dockerfile
-
   helm:
     name: Helm chart validation
     runs-on: ubuntu-latest

@@ -9,7 +9,6 @@ on:
       - kind/**
       - scripts/**
       - services/gateway/**
-      - services/mock-vllm/**
   push:
     branches:
       - main
@@ -19,7 +18,6 @@ on:
       - kind/**
       - scripts/**
       - services/gateway/**
-      - services/mock-vllm/**
   workflow_dispatch:
 
 concurrency:
@@ -33,7 +31,7 @@ env:
   CLUSTER_NAME: duihua-ci
   KUBECTL_CONTEXT: kind-duihua-ci
   GATEWAY_IMAGE_TAG: ci-${{ github.sha }}
-  MOCK_VLLM_IMAGE_TAG: ci-${{ github.sha }}
+  MOCK_VLLM_IMAGE: ghcr.io/beranekio/mock-vllm:latest
 
 jobs:
   gateway-smoke:

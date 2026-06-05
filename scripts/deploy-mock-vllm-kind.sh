@@ -27,7 +27,7 @@ fi
 rendered_manifest="$(mktemp)"
 trap 'rm -f "${rendered_manifest}"' EXIT
 sed \
-  -e "s|image: ghcr.io/beranekio/mock-vllm:latest|image: ${MOCK_VLLM_IMAGE}|g" \
+  -e "s|image: ghcr.io/beranekio/mock-vllm:[^ ]*|image: ${MOCK_VLLM_IMAGE}|g" \
   "${MANIFEST}" >"${rendered_manifest}"
 kubectl apply -n "${NAMESPACE}" -f "${rendered_manifest}"
 

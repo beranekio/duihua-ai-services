@@ -49,6 +49,24 @@ post_response() {
     -d "${payload}"
 }
 
+post_messages() {
+  local payload="$1"
+  curl -sf "${GATEWAY_BASE_URL}/v1/messages" \
+    -H 'Content-Type: application/json' \
+    -H 'anthropic-version: 2023-06-01' \
+    -H 'x-api-key: dummy' \
+    -d "${payload}"
+}
+
+post_messages_count_tokens() {
+  local payload="$1"
+  curl -sf "${GATEWAY_BASE_URL}/v1/messages/count_tokens" \
+    -H 'Content-Type: application/json' \
+    -H 'anthropic-version: 2023-06-01' \
+    -H 'x-api-key: dummy' \
+    -d "${payload}"
+}
+
 get_response_status() {
   local response_id="$1"
   curl -sf "${GATEWAY_BASE_URL}/v1/responses/${response_id}"
@@ -108,6 +126,59 @@ assert_status_equals() {
     fi
     sleep "${interval_seconds}"
   done
+}
+
+test_messages_completion() {
+  echo "=== messages API completion ==="
+  local body
+  body="$(post_messages "{\"model\":\"${DEFAULT_MODEL}\",\"max_tokens\":16,\"messages\":[{\"role\":\"user\",\"content\":\"Say hi in one word.\"}]}")"
+  local message_type
+  message_type="$(json_get "${body}" 'payload.get("type")')"
+  if [[ "${message_type}" != "message" ]]; then
+    echo "expected Anthropic message type 'message', got ${message_type}" >&2
+    exit 1
+  fi
+
+  local output_tokens
+  output_tokens="$(json_get "${body}" 'payload["usage"]["output_tokens"]')"
+  if [[ "${output_tokens}" -le 0 ]]; then
+    echo "expected output_tokens > 0, got ${output_tokens}" >&2
+    exit 1
+  fi
+
+  local content_type
+  content_type="$(json_get "${body}" 'payload["content"][0].get("type")')"
+  if [[ "${content_type}" != "text" ]]; then
+    echo "expected first content block type text, got ${content_type}" >&2
+    exit 1
+  fi
+  echo "messages completion returned type=message with ${output_tokens} output token(s)"
+}
+
+test_messages_default_model() {
+  echo "=== messages API default model ==="
+  local body
+  body="$(post_messages "{\"max_tokens\":8,\"messages\":[{\"role\":\"user\",\"content\":\"Hi\"}]}")"
+  local model
+  model="$(json_get "${body}" 'payload.get("model")')"
+  if [[ "${model}" != "${DEFAULT_MODEL}" ]]; then
+    echo "expected default model ${DEFAULT_MODEL}, got ${model}" >&2
+    exit 1
+  fi
+  echo "messages request used default model ${model}"
+}
+
+test_messages_count_tokens() {
+  echo "=== messages API count_tokens ==="
+  local body
+  body="$(post_messages_count_tokens "{\"model\":\"${DEFAULT_MODEL}\",\"messages\":[{\"role\":\"user\",\"content\":\"Hello\"}]}")"
+  local input_tokens
+  input_tokens="$(json_get "${body}" 'payload["input_tokens"]')"
+  if [[ "${input_tokens}" -le 0 ]]; then
+    echo "expected input_tokens > 0, got ${input_tokens}" >&2
+    exit 1
+  fi
+  echo "messages count_tokens returned ${input_tokens} input token(s)"
 }
 
 test_sync_response_persistence() {
@@ -241,6 +312,9 @@ main() {
   require_command kubectl
 
   wait_for_gateway
+  test_messages_completion
+  test_messages_default_model
+  test_messages_count_tokens
   test_sync_response_persistence
   test_background_response_completion
   test_background_cancel_stays_cancelled

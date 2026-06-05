@@ -5,8 +5,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 KUBECTL_CONTEXT="${KUBECTL_CONTEXT:-kind-${CLUSTER_NAME:-duihua-local}}"
 NAMESPACE="${NAMESPACE:-duihua}"
 TIMEOUT="${TIMEOUT:-120s}"
-MOCK_VLLM_IMAGE_REPO="${MOCK_VLLM_IMAGE_REPO:-duihua-mock-vllm}"
-MOCK_VLLM_IMAGE_TAG="${MOCK_VLLM_IMAGE_TAG:-local}"
+MOCK_VLLM_IMAGE="${MOCK_VLLM_IMAGE:-ghcr.io/beranekio/mock-vllm:latest}"
 MANIFEST="${MANIFEST:-$ROOT_DIR/kind/mock-vllm.yaml}"
 
 kubectl() {
@@ -28,7 +27,7 @@ fi
 rendered_manifest="$(mktemp)"
 trap 'rm -f "${rendered_manifest}"' EXIT
 sed \
-  -e "s|image: duihua-mock-vllm:local|image: ${MOCK_VLLM_IMAGE_REPO}:${MOCK_VLLM_IMAGE_TAG}|g" \
+  -e "s|image: ghcr.io/beranekio/mock-vllm:latest|image: ${MOCK_VLLM_IMAGE}|g" \
   "${MANIFEST}" >"${rendered_manifest}"
 kubectl apply -n "${NAMESPACE}" -f "${rendered_manifest}"
 

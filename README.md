@@ -176,7 +176,7 @@ scripts/kind-local-up.sh
 
 By default, this creates a kind cluster named `duihua-local`, installs the chart into namespace `duihua`, enables the bundled CPU vLLM inference deployment, and exposes the gateway at `http://127.0.0.1:8080` via the kind port mapping in `kind/cluster.yaml`.
 
-After a local gateway image rebuild, `scripts/build-and-load-images.sh` and `scripts/deploy-kind.sh` restart the gateway Deployment so running pods load the new image even when Helm reuses the same `GATEWAY_IMAGE_TAG` (default `local`). Both scripts target the same kind cluster via `KUBECTL_CONTEXT` (default `kind-${CLUSTER_NAME}`), including Helm `--kube-context`. Set `GATEWAY_ROLLOUT_RESTART=false` to skip automatic restarts (rollout status is still checked after deploy).
+After a local gateway image rebuild, `scripts/build-and-load-images.sh` and `scripts/deploy-kind.sh` restart the gateway Deployment so running pods load the new image even when Helm reuses the same `GATEWAY_IMAGE_TAG` (default `local`). Local kind scripts that talk to the cluster (`install-keda.sh`, `deploy-kind.sh`, and the gateway restart helper) target the same kind cluster via `KUBECTL_CONTEXT` (default `kind-${CLUSTER_NAME}`), including Helm `--kube-context`. Set `GATEWAY_ROLLOUT_RESTART=false` to skip automatic restarts (rollout status is still checked after deploy).
 
 ```bash
 curl http://127.0.0.1:8080/healthz
@@ -187,8 +187,8 @@ curl http://127.0.0.1:8080/v1/responses \
 ```
 
 Useful environment variables:
-- `CLUSTER_NAME` (default: `duihua-local`; `scripts/build-and-load-images.sh` and `scripts/deploy-kind.sh` default `KUBECTL_CONTEXT` to `kind-${CLUSTER_NAME}`)
-- `KUBECTL_CONTEXT` (optional override for gateway restart/status in those scripts)
+- `CLUSTER_NAME` (default: `duihua-local`; kind scripts default `KUBECTL_CONTEXT` to `kind-${CLUSTER_NAME}`)
+- `KUBECTL_CONTEXT` (optional override for `install-keda.sh`, `deploy-kind.sh`, and gateway restart/status)
 - `KIND_CONFIG` (default: `kind/cluster.yaml`)
 - `RELEASE_NAME` (default: `duihua`)
 - `NAMESPACE` (default: `duihua`)

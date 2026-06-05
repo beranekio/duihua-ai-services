@@ -7,15 +7,7 @@ TIMEOUT="${TIMEOUT:-300s}"
 GATEWAY_DEPLOYMENT_REQUIRED="${GATEWAY_DEPLOYMENT_REQUIRED:-false}"
 GATEWAY_DEPLOYMENT="${RELEASE_NAME}-duihua-ai-services-gateway"
 
-kubectl() {
-  if [[ -n "${KUBECTL_CONTEXT:-}" ]]; then
-    command kubectl --context "${KUBECTL_CONTEXT}" "$@"
-  else
-    command kubectl "$@"
-  fi
-}
-
-if ! command -v kubectl >/dev/null 2>&1; then
+if ! type -P kubectl >/dev/null 2>&1; then
   if [[ "${GATEWAY_DEPLOYMENT_REQUIRED}" == "true" ]]; then
     echo "kubectl command not found; cannot verify gateway deployment." >&2
     exit 1
@@ -23,6 +15,14 @@ if ! command -v kubectl >/dev/null 2>&1; then
   echo "kubectl command not found; skipping gateway rollout restart."
   exit 0
 fi
+
+kubectl() {
+  if [[ -n "${KUBECTL_CONTEXT:-}" ]]; then
+    command kubectl --context "${KUBECTL_CONTEXT}" "$@"
+  else
+    command kubectl "$@"
+  fi
+}
 
 lookup_output=""
 lookup_status=0

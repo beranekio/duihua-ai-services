@@ -203,7 +203,7 @@ Useful environment variables:
 
 ## CI
 
-- **Validate** (`.github/workflows/validate.yml`): Runs on PRs and pushes to `main`. Performs Rust formatting/clippy/tests, Dockerfile build, `helm lint`, and `helm template` rendering.
+- **Validate** (`.github/workflows/validate.yml`): Runs on PRs and pushes to `main`. Performs Rust formatting/clippy/tests, Hadolint on the gateway Dockerfile, `helm lint`, and `helm template` rendering.
 - **Helm Kind Test** (`.github/workflows/helm-kind-test.yml`): Runs on PRs and pushes to `main` (also supports manual trigger). Creates a real kind cluster using `kind/cluster.yaml`, installs KEDA + the HTTP add-on, builds the gateway image, deploys the Helm chart with `values-kind.yaml`, waits for rollouts, and performs basic smoke tests against the gateway.
 
 The kind test exercises the full installation path used by the local scripts in a real cluster. By default it runs with inference disabled for speed; the full configuration (including vLLM inference pods) can be tested via manual workflow dispatch.

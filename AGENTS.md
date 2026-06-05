@@ -28,25 +28,26 @@ Run the end-to-end kind smoke test so chart and gateway changes are validated ag
 ### When the environment supports kind
 
 1. Ensure prerequisites are available: `docker`, `kind`, `kubectl`, `helm`, `curl`, and `python3`.
-2. Bring up (or refresh) the local stack, then run the smoke test from the repository root:
+2. From the repository root, use **first-time bootstrap** or **incremental refresh** (not both for the same change).
+
+**First-time bootstrap** (new kind cluster or full reinstall):
 
 ```bash
-# Full bootstrap (cluster, KEDA, image build/load, Helm deploy)
 scripts/kind-local-up.sh
-
-# Gateway API + background-job integration checks
 scripts/smoke-test-kind.sh
 ```
 
-If a kind cluster is already running from an earlier session, rebuild and redeploy gateway/chart changes before smoking:
+Do not re-run `scripts/kind-local-up.sh` to pick up gateway or chart edits on an existing cluster. It rebuilds the default `:local` image, but Helm may leave the old gateway pod running; use incremental refresh instead.
+
+**Incremental refresh** (cluster already running; required after gateway or chart edits):
 
 ```bash
 scripts/build-and-load-images.sh   # after gateway image changes
 scripts/deploy-kind.sh             # after chart or values changes
 # Rebuilding :local does not change the Deployment pod template; restart gateway
 # so running pods load the new image (or set a unique GATEWAY_IMAGE_TAG instead).
-kubectl rollout restart deployment/duihua-duihua-ai-services-gateway -n duihua
-kubectl rollout status deployment/duihua-duihua-ai-services-gateway -n duihua
+kubectl rollout restart deployment/${RELEASE_NAME:-duihua}-duihua-ai-services-gateway -n "${NAMESPACE:-duihua}"
+kubectl rollout status deployment/${RELEASE_NAME:-duihua}-duihua-ai-services-gateway -n "${NAMESPACE:-duihua}"
 scripts/smoke-test-kind.sh
 ```
 
@@ -79,8 +80,8 @@ cargo test
 - `bash -n scripts/*.sh` when editing shell helpers
 
 ### Kind integration (gateway or chart changes; see [Pre-push kind integration test](#pre-push-kind-integration-test))
-- `scripts/kind-local-up.sh` (or `build-and-load-images.sh` + `deploy-kind.sh` on an existing cluster)
-- After gateway image rebuilds with the default `:local` tag, `kubectl rollout restart` the gateway deployment (see [incremental workflow](#when-the-environment-supports-kind))
+- `scripts/kind-local-up.sh` for first-time bootstrap only
+- On an existing cluster: `scripts/build-and-load-images.sh`, `scripts/deploy-kind.sh`, then `kubectl rollout restart` the gateway deployment when using the default `:local` tag (see [incremental refresh](#when-the-environment-supports-kind))
 - `scripts/smoke-test-kind.sh`
 
 For unrelated edits (docs-only, scripts that do not affect deploy behavior, etc.), run only the checks relevant to those paths.

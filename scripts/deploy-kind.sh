@@ -2,6 +2,8 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+CLUSTER_NAME="${CLUSTER_NAME:-duihua-local}"
+KUBECTL_CONTEXT="${KUBECTL_CONTEXT:-kind-${CLUSTER_NAME}}"
 RELEASE_NAME="${RELEASE_NAME:-duihua}"
 NAMESPACE="${NAMESPACE:-duihua}"
 CHART_PATH="${CHART_PATH:-$ROOT_DIR/charts/duihua-ai-services}"
@@ -11,8 +13,17 @@ GATEWAY_IMAGE_TAG="${GATEWAY_IMAGE_TAG:-local}"
 INFERENCE_ENABLED="${INFERENCE_ENABLED:-true}"
 TIMEOUT="${TIMEOUT:-300s}"
 
+kubectl() {
+  if [[ -n "${KUBECTL_CONTEXT}" ]]; then
+    command kubectl --context "${KUBECTL_CONTEXT}" "$@"
+  else
+    command kubectl "$@"
+  fi
+}
+
 echo "Deploying Helm release '${RELEASE_NAME}' into namespace '${NAMESPACE}'..."
 helm upgrade --install "${RELEASE_NAME}" "${CHART_PATH}" \
+  --kube-context "${KUBECTL_CONTEXT}" \
   --namespace "${NAMESPACE}" \
   --create-namespace \
   -f "${VALUES_FILE}" \
@@ -20,8 +31,9 @@ helm upgrade --install "${RELEASE_NAME}" "${CHART_PATH}" \
   --set gateway.image.tag="${GATEWAY_IMAGE_TAG}" \
   --set inference.enabled="${INFERENCE_ENABLED}"
 
-echo "Checking rollout status for gateway deployment..."
-kubectl rollout status deployment/"${RELEASE_NAME}"-duihua-ai-services-gateway -n "${NAMESPACE}" --timeout="${TIMEOUT}"
+RELEASE_NAME="${RELEASE_NAME}" NAMESPACE="${NAMESPACE}" TIMEOUT="${TIMEOUT}" \
+  KUBECTL_CONTEXT="${KUBECTL_CONTEXT}" GATEWAY_DEPLOYMENT_REQUIRED=true \
+  "${ROOT_DIR}/scripts/restart-gateway-deployment.sh"
 
 if [[ "${INFERENCE_ENABLED}" == "true" ]]; then
   echo "Checking rollout status for inference deployments..."

@@ -161,7 +161,7 @@ scripts/install-keda.sh
 # 3) Build local gateway image and load it into kind
 scripts/build-and-load-images.sh
 
-# 4) Deploy Helm chart and verify rollout status
+# 4) Deploy Helm chart, restart gateway pods, and verify rollout status
 scripts/deploy-kind.sh
 
 # 5) Exercise the gateway Responses API store and background jobs
@@ -176,6 +176,8 @@ scripts/kind-local-up.sh
 
 By default, this creates a kind cluster named `duihua-local`, installs the chart into namespace `duihua`, enables the bundled CPU vLLM inference deployment, and exposes the gateway at `http://127.0.0.1:8080` via the kind port mapping in `kind/cluster.yaml`.
 
+After a local gateway image rebuild, `scripts/build-and-load-images.sh` and `scripts/deploy-kind.sh` restart the gateway Deployment so running pods load the new image even when Helm reuses the same `GATEWAY_IMAGE_TAG` (default `local`). Local kind scripts that talk to the cluster (`install-keda.sh`, `deploy-kind.sh`, and the gateway restart helper) target the same kind cluster via `KUBECTL_CONTEXT` (default `kind-${CLUSTER_NAME}`), including Helm `--kube-context`. Set `GATEWAY_ROLLOUT_RESTART=false` to skip automatic restarts (rollout status is still checked after deploy).
+
 ```bash
 curl http://127.0.0.1:8080/healthz
 curl http://127.0.0.1:8080/v1/models
@@ -185,12 +187,14 @@ curl http://127.0.0.1:8080/v1/responses \
 ```
 
 Useful environment variables:
-- `CLUSTER_NAME` (default: `duihua-local`)
+- `CLUSTER_NAME` (default: `duihua-local`; kind scripts default `KUBECTL_CONTEXT` to `kind-${CLUSTER_NAME}`)
+- `KUBECTL_CONTEXT` (optional override for `install-keda.sh`, `deploy-kind.sh`, and gateway restart/status)
 - `KIND_CONFIG` (default: `kind/cluster.yaml`)
 - `RELEASE_NAME` (default: `duihua`)
 - `NAMESPACE` (default: `duihua`)
 - `GATEWAY_IMAGE_REPO` (default: `duihua-gateway`)
 - `GATEWAY_IMAGE_TAG` (default: `local`)
+- `GATEWAY_ROLLOUT_RESTART` (default: `true`, used by `scripts/build-and-load-images.sh` and `scripts/deploy-kind.sh`)
 - `INFERENCE_ENABLED` (default: `true`)
 - `VALUES_FILE` (default: `charts/duihua-ai-services/values-kind.yaml`)
 - `KEDA_NAMESPACE` (default: `keda`)

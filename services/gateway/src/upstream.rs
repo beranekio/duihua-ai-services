@@ -221,8 +221,12 @@ impl ResponseTracker {
         let mut buffer = self.buffer.lock().expect("response id buffer poisoned");
         buffer.extend_from_slice(chunk);
 
-        while let Some(newline_idx) = buffer.iter().position(|&b| b == b'\n') {
-            let line_bytes = &buffer[..newline_idx];
+        let mut consumed = 0;
+        let mut found_response = None;
+
+        while let Some(newline_idx) = buffer[consumed..].iter().position(|&b| b == b'\n') {
+            let absolute_newline_idx = consumed + newline_idx;
+            let line_bytes = &buffer[consumed..absolute_newline_idx];
             if let Ok(line_str) = std::str::from_utf8(line_bytes) {
                 let trimmed = line_str.trim_start();
                 if let Some(data) = trimmed.strip_prefix("data:") {
@@ -232,15 +236,23 @@ impl ResponseTracker {
                             if value.get("type").and_then(Value::as_str)
                                 == Some("response.completed")
                             {
-                                let response = value.get("response").cloned();
-                                buffer.drain(..=newline_idx);
-                                return response;
+                                found_response = value.get("response").cloned();
+                                consumed = absolute_newline_idx + 1;
+                                break;
                             }
                         }
                     }
                 }
             }
-            buffer.drain(..=newline_idx);
+            consumed = absolute_newline_idx + 1;
+        }
+
+        if consumed > 0 {
+            buffer.drain(..consumed);
+        }
+
+        if found_response.is_some() {
+            return found_response;
         }
 
         if buffer.len() > 1_048_576 {
@@ -390,6 +402,35 @@ mod tests {
                 b"\"response\":{\"id\":\"resp_drained\",\"object\":\"response\"}}\n"
             ),
             Some(json!({"id": "resp_drained", "object": "response"}))
+        );
+        assert_eq!(tracker.buffer_len(), 0);
+    }
+
+    #[test]
+    fn drains_many_sse_lines_delivered_in_one_chunk() {
+        let state = Arc::new(AppState {
+            upstream_base: "http://default:8000/v1".to_string(),
+            model_upstreams: HashMap::new(),
+            default_model: "model-default".to_string(),
+            upstream_api_key: None,
+            client: Client::new(),
+            responses_api_store_enabled: false,
+            response_store: None,
+            background_jobs: None,
+        });
+        let tracker = ResponseTracker::new(state, "http://default:8000/v1".to_string(), Vec::new());
+
+        let mut chunk = String::new();
+        for i in 0..500 {
+            chunk.push_str(&format!("data: {{\"type\":\"other\",\"i\":{i}}}\n"));
+        }
+        chunk.push_str(
+            "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_batched\"}}\n",
+        );
+
+        assert_eq!(
+            tracker.find_response(chunk.as_bytes()),
+            Some(json!({"id": "resp_batched"}))
         );
         assert_eq!(tracker.buffer_len(), 0);
     }

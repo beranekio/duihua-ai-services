@@ -204,6 +204,6 @@ Useful environment variables:
 ## CI
 
 - **Validate** (`.github/workflows/validate.yml`): Runs on PRs and pushes to `main`. Performs Rust formatting/clippy/tests, Hadolint on the gateway Dockerfile, `helm lint`, and `helm template` rendering.
-- **Helm Kind Test** (`.github/workflows/helm-kind-test.yml`): Runs on PRs and pushes to `main` (also supports manual trigger). Creates a real kind cluster using `kind/cluster.yaml`, installs KEDA + the HTTP add-on, builds the gateway and `mock-vllm` images, deploys the Helm chart with `values-kind.yaml` plus the CI overlay `values-kind-ci.yaml` (inference disabled, upstream pointed at `mock-vllm`), and runs `scripts/smoke-test-kind.sh`.
+- **Kind Integration** (`.github/workflows/kind-integration.yml`): On PRs/pushes that touch the chart, kind assets, scripts, gateway, or mock-vllm (manual trigger also available). Creates a kind cluster (`duihua-ci`), runs `scripts/ci-kind-integration.sh` (KEDA, gateway + mock-vllm images, Helm deploy with `values-kind-ci.yaml`, `scripts/smoke-test-kind.sh`).
 
-The kind test exercises the full installation path used by the local scripts in a real cluster without pulling the large vLLM inference image. Local kind workflows can still enable bundled inference via `values-kind.yaml`.
+CI uses mock-vllm instead of the bundled vLLM image. Local kind workflows still use `values-kind.yaml` with real inference via `scripts/kind-local-up.sh`.

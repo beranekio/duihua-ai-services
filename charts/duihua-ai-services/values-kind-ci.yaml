@@ -1,0 +1,8 @@
+# CI overlay for kind/GitHub Actions: route gateway traffic to mock-vllm instead of
+# bundled vLLM inference deployments.
+gateway:
+  env:
+    upstreamBaseUrl: http://mock-vllm:8000/v1
+
+inference:
+  enabled: false

@@ -6,12 +6,6 @@ on:
     branches:
       - main
   workflow_dispatch:
-    inputs:
-      inference_enabled:
-        description: "Enable bundled inference deployments (pulls large vLLM image)"
-        required: false
-        default: false
-        type: boolean
 
 permissions:
   contents: read
@@ -42,27 +36,27 @@ jobs:
           GATEWAY_IMAGE_TAG: ci-${{ github.sha }}
         run: scripts/build-and-load-images.sh
 
+      - name: Build and load mock-vllm image
+        env:
+          CLUSTER_NAME: duihua-kind-test
+          MOCK_VLLM_IMAGE_TAG: ci-${{ github.sha }}
+        run: scripts/build-and-load-mock-vllm.sh
+
       - name: Deploy Helm chart
         env:
           CLUSTER_NAME: duihua-kind-test
           GATEWAY_IMAGE_TAG: ci-${{ github.sha }}
-          INFERENCE_ENABLED: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.inference_enabled || 'false' }}
+          EXTRA_VALUES_FILE: charts/duihua-ai-services/values-kind-ci.yaml
+          INFERENCE_ENABLED: "false"
         run: scripts/deploy-kind.sh
 
-      - name: Verify gateway is reachable
-        run: |
-          set -euo pipefail
-          echo "Waiting for gateway to be ready..."
-          for i in {1..30}; do
-            if curl -sf http://127.0.0.1:8080/healthz >/dev/null; then
-              echo "Gateway healthz OK"
-              break
-            fi
-            echo "Attempt $i failed, retrying in 5s..."
-            sleep 5
-          done
+      - name: Deploy mock-vllm upstream
+        env:
+          CLUSTER_NAME: duihua-kind-test
+          MOCK_VLLM_IMAGE_TAG: ci-${{ github.sha }}
+        run: scripts/deploy-mock-vllm-kind.sh
 
-          echo "Checking /v1/models endpoint..."
-          curl -sf http://127.0.0.1:8080/v1/models | head -c 500
-          echo
-          echo "Smoke test passed."
+      - name: Run gateway smoke tests
+        env:
+          KUBECTL_CONTEXT: kind-duihua-kind-test
+        run: scripts/smoke-test-kind.sh

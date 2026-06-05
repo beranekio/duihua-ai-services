@@ -8,10 +8,16 @@ RELEASE_NAME="${RELEASE_NAME:-duihua}"
 NAMESPACE="${NAMESPACE:-duihua}"
 CHART_PATH="${CHART_PATH:-$ROOT_DIR/charts/duihua-ai-services}"
 VALUES_FILE="${VALUES_FILE:-$ROOT_DIR/charts/duihua-ai-services/values-kind.yaml}"
+EXTRA_VALUES_FILE="${EXTRA_VALUES_FILE:-}"
 GATEWAY_IMAGE_REPO="${GATEWAY_IMAGE_REPO:-duihua-gateway}"
 GATEWAY_IMAGE_TAG="${GATEWAY_IMAGE_TAG:-local}"
 INFERENCE_ENABLED="${INFERENCE_ENABLED:-true}"
 TIMEOUT="${TIMEOUT:-300s}"
+
+helm_values_args=(-f "${VALUES_FILE}")
+if [[ -n "${EXTRA_VALUES_FILE}" ]]; then
+  helm_values_args+=(-f "${EXTRA_VALUES_FILE}")
+fi
 
 kubectl() {
   if [[ -n "${KUBECTL_CONTEXT}" ]]; then
@@ -26,7 +32,7 @@ helm upgrade --install "${RELEASE_NAME}" "${CHART_PATH}" \
   --kube-context "${KUBECTL_CONTEXT}" \
   --namespace "${NAMESPACE}" \
   --create-namespace \
-  -f "${VALUES_FILE}" \
+  "${helm_values_args[@]}" \
   --set gateway.image.repository="${GATEWAY_IMAGE_REPO}" \
   --set gateway.image.tag="${GATEWAY_IMAGE_TAG}" \
   --set inference.enabled="${INFERENCE_ENABLED}"

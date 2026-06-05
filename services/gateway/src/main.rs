@@ -816,29 +816,26 @@ fn apply_anthropic_upstream_headers(
     state: &AppState,
 ) -> reqwest::RequestBuilder {
     let mut has_version = false;
-    let mut has_client_auth = false;
 
-    for name in [
-        "anthropic-version",
-        "anthropic-beta",
-        "x-api-key",
-        "authorization",
-    ] {
+    for name in ["anthropic-version", "anthropic-beta"] {
         if let Some(value) = headers.get(name) {
             req = req.header(name, value);
             if name == "anthropic-version" {
                 has_version = true;
-            } else if name == "x-api-key" || name == "authorization" {
-                has_client_auth = true;
             }
         }
     }
     if !has_version {
         req = req.header("anthropic-version", "2023-06-01");
     }
-    if !has_client_auth {
-        if let Some(api_key) = &state.upstream_api_key {
-            req = req.bearer_auth(api_key);
+
+    if let Some(api_key) = &state.upstream_api_key {
+        return req.bearer_auth(api_key);
+    }
+
+    for name in ["x-api-key", "authorization"] {
+        if let Some(value) = headers.get(name) {
+            req = req.header(name, value);
         }
     }
     req
@@ -1383,7 +1380,7 @@ mod tests {
     }
 
     #[test]
-    fn preserves_client_anthropic_headers_over_upstream_api_key() {
+    fn uses_upstream_bearer_instead_of_client_api_key() {
         let state = AppState {
             upstream_base: "http://default:8000/v1".to_string(),
             model_upstreams: HashMap::new(),
@@ -1395,7 +1392,7 @@ mod tests {
             background_jobs: None,
         };
         let mut headers = HeaderMap::new();
-        headers.insert("x-api-key", "client-secret".parse().unwrap());
+        headers.insert("x-api-key", "dummy".parse().unwrap());
         headers.insert("anthropic-version", "2024-01-01".parse().unwrap());
         headers.insert("anthropic-beta", "messages-2024-10-22".parse().unwrap());
 
@@ -1403,11 +1400,16 @@ mod tests {
             apply_anthropic_upstream_headers(Client::new().post("http://test"), &headers, &state);
         let built = req.build().expect("request should build");
         assert_eq!(
+            built.headers().get("x-api-key"),
+            None,
+            "client x-api-key must not be forwarded when UPSTREAM_API_KEY is configured"
+        );
+        assert_eq!(
             built
                 .headers()
-                .get("x-api-key")
+                .get("authorization")
                 .and_then(|v| v.to_str().ok()),
-            Some("client-secret")
+            Some("Bearer upstream-secret")
         );
         assert_eq!(
             built
@@ -1423,10 +1425,40 @@ mod tests {
                 .and_then(|v| v.to_str().ok()),
             Some("messages-2024-10-22")
         );
+    }
+
+    #[test]
+    fn forwards_client_auth_when_upstream_api_key_unset() {
+        let state = AppState {
+            upstream_base: "http://default:8000/v1".to_string(),
+            model_upstreams: HashMap::new(),
+            default_model: "model-default".to_string(),
+            upstream_api_key: None,
+            client: Client::new(),
+            responses_api_store_enabled: false,
+            response_store: None,
+            background_jobs: None,
+        };
+        let mut headers = HeaderMap::new();
+        headers.insert("x-api-key", "client-secret".parse().unwrap());
+        headers.insert("authorization", "Bearer client-bearer".parse().unwrap());
+
+        let req =
+            apply_anthropic_upstream_headers(Client::new().post("http://test"), &headers, &state);
+        let built = req.build().expect("request should build");
         assert_eq!(
-            built.headers().get("authorization"),
-            None,
-            "client x-api-key should not trigger upstream bearer injection"
+            built
+                .headers()
+                .get("x-api-key")
+                .and_then(|v| v.to_str().ok()),
+            Some("client-secret")
+        );
+        assert_eq!(
+            built
+                .headers()
+                .get("authorization")
+                .and_then(|v| v.to_str().ok()),
+            Some("Bearer client-bearer")
         );
     }
 }

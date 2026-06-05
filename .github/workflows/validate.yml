@@ -46,14 +46,16 @@ jobs:
         run: cargo test --all-features
 
   dockerfile:
-    name: Dockerfile validation
+    name: Dockerfile lint
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v6
 
-      - name: Build gateway image
-        run: docker build -f services/gateway/Dockerfile services/gateway
+      - name: Lint gateway Dockerfile
+        uses: hadolint/hadolint-action@v3.3.0
+        with:
+          dockerfile: services/gateway/Dockerfile
 
   helm:
     name: Helm chart validation

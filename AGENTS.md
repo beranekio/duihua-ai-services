@@ -43,6 +43,10 @@ If a kind cluster is already running from an earlier session, rebuild and redepl
 ```bash
 scripts/build-and-load-images.sh   # after gateway image changes
 scripts/deploy-kind.sh             # after chart or values changes
+# Rebuilding :local does not change the Deployment pod template; restart gateway
+# so running pods load the new image (or set a unique GATEWAY_IMAGE_TAG instead).
+kubectl rollout restart deployment/duihua-duihua-ai-services-gateway -n duihua
+kubectl rollout status deployment/duihua-duihua-ai-services-gateway -n duihua
 scripts/smoke-test-kind.sh
 ```
 
@@ -56,10 +60,16 @@ If Docker, kind, cluster access, or sufficient resources are unavailable, still 
 
 Run checks that match the files you changed. Gateway and chart edits need both unit/static checks **and** the kind smoke test above when possible.
 
-### Rust gateway (`services/gateway`)
-- `cargo fmt --all --check`
-- `cargo clippy --all-targets --all-features -- -D warnings`
-- `cargo test`
+### Rust gateway (run from `services/gateway`)
+
+There is no root-level `Cargo.toml`; run these from `services/gateway`:
+
+```bash
+cd services/gateway
+cargo fmt --all --check
+cargo clippy --all-targets --all-features -- -D warnings
+cargo test
+```
 
 ### Helm chart (`charts/duihua-ai-services`)
 - `helm lint charts/duihua-ai-services`
@@ -70,6 +80,7 @@ Run checks that match the files you changed. Gateway and chart edits need both u
 
 ### Kind integration (gateway or chart changes; see [Pre-push kind integration test](#pre-push-kind-integration-test))
 - `scripts/kind-local-up.sh` (or `build-and-load-images.sh` + `deploy-kind.sh` on an existing cluster)
+- After gateway image rebuilds with the default `:local` tag, `kubectl rollout restart` the gateway deployment (see [incremental workflow](#when-the-environment-supports-kind))
 - `scripts/smoke-test-kind.sh`
 
 For unrelated edits (docs-only, scripts that do not affect deploy behavior, etc.), run only the checks relevant to those paths.

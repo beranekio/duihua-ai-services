@@ -13,6 +13,7 @@ export NAMESPACE="${NAMESPACE:-duihua}"
 export GATEWAY_IMAGE_TAG="${GATEWAY_IMAGE_TAG:-local}"
 export MOCK_VLLM_IMAGE_TAG="${MOCK_VLLM_IMAGE_TAG:-local}"
 
+export VALUES_FILE="${VALUES_FILE:-${ROOT_DIR}/charts/duihua-ai-services/values-kind.yaml}"
 export EXTRA_VALUES_FILE="${EXTRA_VALUES_FILE:-${ROOT_DIR}/charts/duihua-ai-services/values-kind-ci.yaml}"
 export INFERENCE_ENABLED="${INFERENCE_ENABLED:-false}"
 
@@ -31,11 +32,20 @@ run_step "Building and loading gateway image"
 run_step "Building and loading mock-vllm image"
 "${ROOT_DIR}/scripts/build-and-load-mock-vllm.sh"
 
+run_step "Deploying mock-vllm upstream (before gateway)"
+"${ROOT_DIR}/scripts/deploy-mock-vllm-kind.sh"
+
+run_step "Verifying mock-vllm is reachable in-cluster"
+"${ROOT_DIR}/scripts/verify-mock-vllm-upstream.sh"
+
 run_step "Deploying Helm chart (CI values overlay, inference disabled)"
 "${ROOT_DIR}/scripts/deploy-kind.sh"
 
-run_step "Deploying mock-vllm upstream"
-"${ROOT_DIR}/scripts/deploy-mock-vllm-kind.sh"
+gateway_deployment="${RELEASE_NAME}-duihua-ai-services-gateway"
+echo "Gateway upstream configuration:"
+kubectl get deployment "${gateway_deployment}" -n "${NAMESPACE}" \
+  -o jsonpath='{range .spec.template.spec.containers[0].env[*]}{.name}={.value}{"\n"}{end}' \
+  | rg '^UPSTREAM_BASE_URL=|^MODEL_UPSTREAMS='
 
 run_step "Running gateway smoke tests"
 "${ROOT_DIR}/scripts/smoke-test-kind.sh"

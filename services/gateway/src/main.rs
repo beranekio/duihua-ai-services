@@ -838,7 +838,7 @@ fn apply_anthropic_upstream_headers(
     }
     if !has_client_auth {
         if let Some(api_key) = &state.upstream_api_key {
-            req = req.header("x-api-key", api_key);
+            req = req.bearer_auth(api_key);
         }
     }
     req
@@ -1346,7 +1346,7 @@ mod tests {
     }
 
     #[test]
-    fn applies_default_anthropic_version_and_upstream_api_key() {
+    fn applies_default_anthropic_version_and_upstream_bearer_auth() {
         let state = AppState {
             upstream_base: "http://default:8000/v1".to_string(),
             model_upstreams: HashMap::new(),
@@ -1369,11 +1369,16 @@ mod tests {
             Some("2023-06-01")
         );
         assert_eq!(
+            built.headers().get("x-api-key"),
+            None,
+            "configured upstream key should not be sent as x-api-key"
+        );
+        assert_eq!(
             built
                 .headers()
-                .get("x-api-key")
+                .get("authorization")
                 .and_then(|v| v.to_str().ok()),
-            Some("upstream-secret")
+            Some("Bearer upstream-secret")
         );
     }
 
@@ -1417,6 +1422,11 @@ mod tests {
                 .get("anthropic-beta")
                 .and_then(|v| v.to_str().ok()),
             Some("messages-2024-10-22")
+        );
+        assert_eq!(
+            built.headers().get("authorization"),
+            None,
+            "client x-api-key should not trigger upstream bearer injection"
         );
     }
 }

@@ -376,23 +376,19 @@ async fn chat_completions(
     .await
 }
 
+fn messages_upstream<'a>(state: &'a AppState, payload: &mut MessagesRequest) -> &'a str {
+    let selected_model = payload
+        .model
+        .get_or_insert_with(|| state.default_model.clone());
+    upstream_for_model(state, selected_model)
+}
+
 async fn messages(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Json(mut payload): Json<MessagesRequest>,
 ) -> Response {
-    if payload.model.is_none() {
-        payload.model = Some(state.default_model.clone());
-    }
-
-    let selected_model = payload
-        .model
-        .as_deref()
-        .unwrap_or(state.default_model.as_str())
-        .to_string();
-
-    let upstream = upstream_for_model(state.as_ref(), &selected_model);
-
+    let upstream = messages_upstream(state.as_ref(), &mut payload);
     proxy_anthropic_request(state.as_ref(), headers, payload, upstream, "messages").await
 }
 
@@ -401,18 +397,7 @@ async fn messages_count_tokens(
     headers: HeaderMap,
     Json(mut payload): Json<MessagesRequest>,
 ) -> Response {
-    if payload.model.is_none() {
-        payload.model = Some(state.default_model.clone());
-    }
-
-    let selected_model = payload
-        .model
-        .as_deref()
-        .unwrap_or(state.default_model.as_str())
-        .to_string();
-
-    let upstream = upstream_for_model(state.as_ref(), &selected_model);
-
+    let upstream = messages_upstream(state.as_ref(), &mut payload);
     proxy_anthropic_request(
         state.as_ref(),
         headers,
@@ -830,6 +815,9 @@ fn apply_anthropic_upstream_headers(
     headers: &HeaderMap,
     state: &AppState,
 ) -> reqwest::RequestBuilder {
+    let mut has_version = false;
+    let mut has_client_auth = false;
+
     for name in [
         "anthropic-version",
         "anthropic-beta",
@@ -838,13 +826,16 @@ fn apply_anthropic_upstream_headers(
     ] {
         if let Some(value) = headers.get(name) {
             req = req.header(name, value);
+            if name == "anthropic-version" {
+                has_version = true;
+            } else if name == "x-api-key" || name == "authorization" {
+                has_client_auth = true;
+            }
         }
     }
-    if !headers.contains_key("anthropic-version") {
+    if !has_version {
         req = req.header("anthropic-version", "2023-06-01");
     }
-    let has_client_auth =
-        headers.contains_key("x-api-key") || headers.contains_key("authorization");
     if !has_client_auth {
         if let Some(api_key) = &state.upstream_api_key {
             req = req.header("x-api-key", api_key);

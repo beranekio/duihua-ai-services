@@ -67,8 +67,8 @@ class MockVllmHandler(BaseHTTPRequestHandler):
         raw = self.rfile.read(length) if length else b"{}"
         try:
             payload = json.loads(raw.decode("utf-8") or "{}")
-        except json.JSONDecodeError:
-            self._json_response(400, {"error": "invalid JSON"})
+        except ValueError:
+            self._json_response(400, {"error": "invalid JSON or encoding"})
             return
 
         if should_delay(payload):

@@ -21,13 +21,14 @@ echo "Deploying mock-vllm into namespace '${NAMESPACE}'..."
 kubectl create namespace "${NAMESPACE}" --dry-run=client -o yaml | kubectl apply -f -
 
 rendered_manifest="$(mktemp)"
+trap 'rm -f "${rendered_manifest}"' EXIT
 sed \
   -e "s|image: duihua-mock-vllm:local|image: ${MOCK_VLLM_IMAGE_REPO}:${MOCK_VLLM_IMAGE_TAG}|g" \
   "${MANIFEST}" >"${rendered_manifest}"
-kubectl apply -f "${rendered_manifest}"
-rm -f "${rendered_manifest}"
+kubectl apply -n "${NAMESPACE}" -f "${rendered_manifest}"
 
-echo "Waiting for mock-vllm rollout..."
-kubectl rollout status deployment/mock-vllm -n "${NAMESPACE}" --timeout="${TIMEOUT}"
+NAMESPACE="${NAMESPACE}" TIMEOUT="${TIMEOUT}" KUBECTL_CONTEXT="${KUBECTL_CONTEXT}" \
+  MOCK_VLLM_DEPLOYMENT_REQUIRED=true \
+  "${ROOT_DIR}/scripts/restart-mock-vllm-deployment.sh"
 
 echo "mock-vllm deployment ready."

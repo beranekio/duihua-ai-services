@@ -179,7 +179,7 @@ struct ResponseTracker {
     state: Arc<AppState>,
     upstream: String,
     input: Vec<Value>,
-    buffer: Mutex<String>,
+    buffer: Mutex<Vec<u8>>,
     tracked: AtomicBool,
 }
 
@@ -189,7 +189,7 @@ impl ResponseTracker {
             state,
             upstream,
             input,
-            buffer: Mutex::new(String::new()),
+            buffer: Mutex::new(Vec::new()),
             tracked: AtomicBool::new(false),
         }
     }
@@ -198,10 +198,6 @@ impl ResponseTracker {
         if self.tracked.load(Ordering::Relaxed) {
             return;
         }
-
-        let Ok(chunk) = std::str::from_utf8(chunk) else {
-            return;
-        };
 
         let Some(response) = self.find_response(chunk) else {
             return;
@@ -221,31 +217,57 @@ impl ResponseTracker {
         }
     }
 
-    fn find_response(&self, chunk: &str) -> Option<Value> {
+    fn find_response(&self, chunk: &[u8]) -> Option<Value> {
         let mut buffer = self.buffer.lock().expect("response id buffer poisoned");
-        buffer.push_str(chunk);
+        buffer.extend_from_slice(chunk);
 
-        if buffer.len() > 1_048_576 {
-            let keep_from = buffer.len() - 1_048_576;
-            buffer.drain(..keep_from);
-        }
+        let mut consumed = 0;
+        let mut found_response = None;
 
-        for line in buffer.lines() {
-            let Some(data) = line.trim_start().strip_prefix("data:") else {
-                continue;
-            };
-            let data = data.trim();
-            if data == "[DONE]" {
-                continue;
-            }
-            if let Ok(value) = serde_json::from_str::<Value>(data) {
-                if value.get("type").and_then(Value::as_str) == Some("response.completed") {
-                    return value.get("response").cloned();
+        while let Some(newline_idx) = buffer[consumed..].iter().position(|&b| b == b'\n') {
+            let absolute_newline_idx = consumed + newline_idx;
+            let line_bytes = &buffer[consumed..absolute_newline_idx];
+            if let Ok(line_str) = std::str::from_utf8(line_bytes) {
+                let trimmed = line_str.trim_start();
+                if let Some(data) = trimmed.strip_prefix("data:") {
+                    let data = data.trim();
+                    if data != "[DONE]" {
+                        if let Ok(value) = serde_json::from_str::<Value>(data) {
+                            if value.get("type").and_then(Value::as_str)
+                                == Some("response.completed")
+                            {
+                                found_response = value.get("response").cloned();
+                                consumed = absolute_newline_idx + 1;
+                                break;
+                            }
+                        }
+                    }
                 }
             }
+            consumed = absolute_newline_idx + 1;
+        }
+
+        if consumed > 0 {
+            buffer.drain(..consumed);
+        }
+
+        if found_response.is_some() {
+            return found_response;
+        }
+
+        if buffer.len() > 1_048_576 {
+            buffer.clear();
         }
 
         None
+    }
+
+    #[cfg(test)]
+    fn buffer_len(&self) -> usize {
+        self.buffer
+            .lock()
+            .expect("response id buffer poisoned")
+            .len()
     }
 }
 
@@ -306,15 +328,111 @@ mod tests {
         let tracker = ResponseTracker::new(state, "http://default:8000/v1".to_string(), Vec::new());
 
         assert_eq!(
-            tracker.find_response("data: {\"type\":\"response.completed\","),
+            tracker.find_response(b"data: {\"type\":\"response.completed\","),
             None
         );
         assert_eq!(
             tracker.find_response(
-                "\"response\":{\"id\":\"resp_streamed\",\"object\":\"response\"}}\n"
+                b"\"response\":{\"id\":\"resp_streamed\",\"object\":\"response\"}}\n"
             ),
             Some(json!({"id": "resp_streamed", "object": "response"}))
         );
+    }
+
+    #[test]
+    fn extracts_completed_streamed_response_when_utf8_splits_across_chunks() {
+        let state = Arc::new(AppState {
+            upstream_base: "http://default:8000/v1".to_string(),
+            model_upstreams: HashMap::new(),
+            default_model: "model-default".to_string(),
+            upstream_api_key: None,
+            client: Client::new(),
+            responses_api_store_enabled: false,
+            response_store: None,
+            background_jobs: None,
+        });
+        let tracker = ResponseTracker::new(state, "http://default:8000/v1".to_string(), Vec::new());
+
+        let prefix = b"data: {\"type\":\"response.completed\",\"emoji\":\"";
+        let emoji = "😀".as_bytes();
+        let suffix = b"\",\"response\":{\"id\":\"resp_emoji\"}}\n";
+        let mut full = prefix.to_vec();
+        full.extend_from_slice(emoji);
+        full.extend_from_slice(suffix);
+        let split_at = prefix.len() + 2;
+        let (first, second) = full.split_at(split_at);
+
+        assert_eq!(tracker.find_response(first), None);
+        assert_eq!(
+            tracker.find_response(second),
+            Some(json!({"id": "resp_emoji"}))
+        );
+    }
+
+    #[test]
+    fn drains_complete_sse_lines_from_tracker_buffer() {
+        let state = Arc::new(AppState {
+            upstream_base: "http://default:8000/v1".to_string(),
+            model_upstreams: HashMap::new(),
+            default_model: "model-default".to_string(),
+            upstream_api_key: None,
+            client: Client::new(),
+            responses_api_store_enabled: false,
+            response_store: None,
+            background_jobs: None,
+        });
+        let tracker = ResponseTracker::new(state, "http://default:8000/v1".to_string(), Vec::new());
+
+        for i in 0..500 {
+            let line = format!("data: {{\"type\":\"other\",\"i\":{i}}}\n");
+            assert_eq!(tracker.find_response(line.as_bytes()), None);
+        }
+        assert_eq!(tracker.buffer_len(), 0);
+
+        assert_eq!(
+            tracker.find_response(b"data: {\"type\":\"response.completed\","),
+            None
+        );
+        assert!(
+            tracker.buffer_len() < 64,
+            "buffer should only retain the incomplete line"
+        );
+        assert_eq!(
+            tracker.find_response(
+                b"\"response\":{\"id\":\"resp_drained\",\"object\":\"response\"}}\n"
+            ),
+            Some(json!({"id": "resp_drained", "object": "response"}))
+        );
+        assert_eq!(tracker.buffer_len(), 0);
+    }
+
+    #[test]
+    fn drains_many_sse_lines_delivered_in_one_chunk() {
+        let state = Arc::new(AppState {
+            upstream_base: "http://default:8000/v1".to_string(),
+            model_upstreams: HashMap::new(),
+            default_model: "model-default".to_string(),
+            upstream_api_key: None,
+            client: Client::new(),
+            responses_api_store_enabled: false,
+            response_store: None,
+            background_jobs: None,
+        });
+        let tracker = ResponseTracker::new(state, "http://default:8000/v1".to_string(), Vec::new());
+
+        let mut chunk = String::new();
+        for i in 0..500 {
+            chunk.push_str(&format!("data: {{\"type\":\"other\",\"i\":{i}}}\n"));
+        }
+        chunk.push_str(
+            "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_batched\"}}\n",
+        );
+
+        assert_eq!(
+            tracker.find_response(chunk.as_bytes()),
+            Some(json!({"id": "resp_batched"}))
+        );
+        assert_eq!(tracker.buffer_len(), 0);
     }
 
     #[test]

@@ -23,6 +23,7 @@ kubectl() {
 
 echo "Deploying Helm release '${RELEASE_NAME}' into namespace '${NAMESPACE}'..."
 helm upgrade --install "${RELEASE_NAME}" "${CHART_PATH}" \
+  --kube-context "${KUBECTL_CONTEXT}" \
   --namespace "${NAMESPACE}" \
   --create-namespace \
   -f "${VALUES_FILE}" \
@@ -31,7 +32,7 @@ helm upgrade --install "${RELEASE_NAME}" "${CHART_PATH}" \
   --set inference.enabled="${INFERENCE_ENABLED}"
 
 RELEASE_NAME="${RELEASE_NAME}" NAMESPACE="${NAMESPACE}" TIMEOUT="${TIMEOUT}" \
-  KUBECTL_CONTEXT="${KUBECTL_CONTEXT}" \
+  KUBECTL_CONTEXT="${KUBECTL_CONTEXT}" GATEWAY_DEPLOYMENT_REQUIRED=true \
   "${ROOT_DIR}/scripts/restart-gateway-deployment.sh"
 
 if [[ "${INFERENCE_ENABLED}" == "true" ]]; then

@@ -6,6 +6,7 @@ GATEWAY_BASE_URL="${GATEWAY_BASE_URL:-http://127.0.0.1:8080}"
 DEFAULT_MODEL="${DEFAULT_MODEL:-HuggingFaceTB/SmolLM2-135M-Instruct}"
 RELEASE_NAME="${RELEASE_NAME:-duihua}"
 NAMESPACE="${NAMESPACE:-duihua}"
+KUBECTL_CONTEXT="${KUBECTL_CONTEXT:-}"
 HEALTHZ_RETRIES="${HEALTHZ_RETRIES:-30}"
 HEALTHZ_INTERVAL_SECONDS="${HEALTHZ_INTERVAL_SECONDS:-5}"
 BACKGROUND_POLL_ATTEMPTS="${BACKGROUND_POLL_ATTEMPTS:-30}"
@@ -18,6 +19,14 @@ require_command() {
   if ! command -v "${command_name}" >/dev/null 2>&1; then
     echo "Required command not found: ${command_name}" >&2
     exit 1
+  fi
+}
+
+kubectl() {
+  if [[ -n "${KUBECTL_CONTEXT}" ]]; then
+    command kubectl --context "${KUBECTL_CONTEXT}" "$@"
+  else
+    command kubectl "$@"
   fi
 }
 
@@ -283,14 +292,19 @@ test_in_flight_continuation_rejected() {
 
 test_background_job_resources() {
   echo "=== background job resources ==="
-  python3 - "${NAMESPACE}" <<'PY'
+  python3 - "${NAMESPACE}" "${KUBECTL_CONTEXT}" <<'PY'
 import json
+import os
 import subprocess
 import sys
 
 namespace = sys.argv[1]
+kubectl = ["kubectl"]
+context = sys.argv[2] if len(sys.argv) > 2 else os.environ.get("KUBECTL_CONTEXT", "")
+if context:
+    kubectl.extend(["--context", context])
 raw = subprocess.check_output(
-    ["kubectl", "get", "jobs", "-n", namespace, "-o", "json"],
+    [*kubectl, "get", "jobs", "-n", namespace, "-o", "json"],
     text=True,
 )
 jobs = json.loads(raw).get("items", [])

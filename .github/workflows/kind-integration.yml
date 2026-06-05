@@ -1,0 +1,54 @@
+# Deploy the chart on a real kind cluster and run gateway smoke tests against mock-vllm.
+name: Kind Integration
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/kind-integration.yml
+      - charts/**
+      - kind/**
+      - scripts/**
+      - services/gateway/**
+      - services/mock-vllm/**
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/kind-integration.yml
+      - charts/**
+      - kind/**
+      - scripts/**
+      - services/gateway/**
+      - services/mock-vllm/**
+  workflow_dispatch:
+
+concurrency:
+  group: kind-integration-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CLUSTER_NAME: duihua-ci
+  KUBECTL_CONTEXT: kind-duihua-ci
+  GATEWAY_IMAGE_TAG: ci-${{ github.sha }}
+  MOCK_VLLM_IMAGE_TAG: ci-${{ github.sha }}
+
+jobs:
+  gateway-smoke:
+    name: Gateway smoke on kind
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Create kind cluster
+        uses: helm/kind-action@v1
+        with:
+          cluster_name: ${{ env.CLUSTER_NAME }}
+          config: kind/cluster.yaml
+
+      - name: Run kind integration smoke tests
+        run: scripts/ci-kind-integration.sh

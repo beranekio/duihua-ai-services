@@ -1,0 +1,10 @@
+# CI overlay for kind/GitHub Actions: route gateway traffic to mock-vllm instead of
+# bundled vLLM inference deployments. Replaces the kind placeholder upstream in
+# values-kind.yaml (http://127.0.0.1:9/v1) used when per-model inference proxies exist.
+gateway:
+  env:
+    upstreamBaseUrl: http://mock-vllm:8000/v1
+    defaultModel: HuggingFaceTB/SmolLM2-135M-Instruct
+
+inference:
+  enabled: false

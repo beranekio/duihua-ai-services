@@ -1,0 +1,64 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mock-vllm
+  labels:
+    app: mock-vllm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mock-vllm
+  template:
+    metadata:
+      labels:
+        app: mock-vllm
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: mock-vllm
+          image: duihua-mock-vllm:local
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          ports:
+            - containerPort: 8000
+          env:
+            - name: DEFAULT_MODEL
+              value: HuggingFaceTB/SmolLM2-135M-Instruct
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+          resources:
+            requests:
+              cpu: 25m
+              memory: 32Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mock-vllm
+  labels:
+    app: mock-vllm
+spec:
+  selector:
+    app: mock-vllm
+  ports:
+    - name: http
+      port: 8000
+      targetPort: 8000

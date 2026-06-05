@@ -106,6 +106,13 @@ struct ChatCompletionRequest {
 }
 
 #[derive(Deserialize, Serialize)]
+struct MessagesRequest {
+    model: Option<String>,
+    #[serde(flatten)]
+    extra: Value,
+}
+
+#[derive(Deserialize, Serialize)]
 struct EmbeddingsRequest {
     model: Option<String>,
     input: Value,
@@ -239,6 +246,8 @@ async fn main() -> Result<()> {
         .route("/healthz", get(healthz))
         .route("/v1/models", get(list_models))
         .route("/v1/chat/completions", post(chat_completions))
+        .route("/v1/messages", post(messages))
+        .route("/v1/messages/count_tokens", post(messages_count_tokens))
         .route("/v1/responses", post(responses))
         .route("/v1/responses/input_tokens", post(response_input_tokens))
         .route("/v1/embeddings", post(embeddings))
@@ -363,6 +372,38 @@ async fn chat_completions(
         payload,
         upstream,
         "chat/completions",
+    )
+    .await
+}
+
+fn messages_upstream<'a>(state: &'a AppState, payload: &mut MessagesRequest) -> &'a str {
+    let selected_model = payload
+        .model
+        .get_or_insert_with(|| state.default_model.clone());
+    upstream_for_model(state, selected_model)
+}
+
+async fn messages(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(mut payload): Json<MessagesRequest>,
+) -> Response {
+    let upstream = messages_upstream(state.as_ref(), &mut payload);
+    proxy_anthropic_request(state.as_ref(), headers, payload, upstream, "messages").await
+}
+
+async fn messages_count_tokens(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(mut payload): Json<MessagesRequest>,
+) -> Response {
+    let upstream = messages_upstream(state.as_ref(), &mut payload);
+    proxy_anthropic_request(
+        state.as_ref(),
+        headers,
+        payload,
+        upstream,
+        "messages/count_tokens",
     )
     .await
 }
@@ -736,9 +777,68 @@ async fn proxy_request<T: Serialize>(
     endpoint: &str,
 ) -> Response {
     let url = format!("{}/{}", upstream, endpoint);
-    let req = state.client.post(&url).json(&payload);
+    let req =
+        apply_openai_upstream_headers(state.client.post(&url).json(&payload), &headers, state);
 
-    proxy_upstream(state, headers, req).await
+    proxy_upstream_request(req).await
+}
+
+async fn proxy_anthropic_request<T: Serialize>(
+    state: &AppState,
+    headers: HeaderMap,
+    payload: T,
+    upstream: &str,
+    endpoint: &str,
+) -> Response {
+    let url = format!("{}/{}", upstream, endpoint);
+    let req =
+        apply_anthropic_upstream_headers(state.client.post(&url).json(&payload), &headers, state);
+
+    proxy_upstream_request(req).await
+}
+
+fn apply_openai_upstream_headers(
+    mut req: reqwest::RequestBuilder,
+    headers: &HeaderMap,
+    state: &AppState,
+) -> reqwest::RequestBuilder {
+    if let Some(auth_header) = headers.get("authorization") {
+        req = req.header("authorization", auth_header);
+    } else if let Some(api_key) = &state.upstream_api_key {
+        req = req.bearer_auth(api_key);
+    }
+    req
+}
+
+fn apply_anthropic_upstream_headers(
+    mut req: reqwest::RequestBuilder,
+    headers: &HeaderMap,
+    state: &AppState,
+) -> reqwest::RequestBuilder {
+    let mut has_version = false;
+
+    for name in ["anthropic-version", "anthropic-beta"] {
+        if let Some(value) = headers.get(name) {
+            req = req.header(name, value);
+            if name == "anthropic-version" {
+                has_version = true;
+            }
+        }
+    }
+    if !has_version {
+        req = req.header("anthropic-version", "2023-06-01");
+    }
+
+    if let Some(api_key) = &state.upstream_api_key {
+        return req.bearer_auth(api_key);
+    }
+
+    for name in ["x-api-key", "authorization"] {
+        if let Some(value) = headers.get(name) {
+            req = req.header(name, value);
+        }
+    }
+    req
 }
 
 async fn proxy_upstream_tracking_response(
@@ -749,11 +849,7 @@ async fn proxy_upstream_tracking_response(
     input: Vec<Value>,
     persist_response: bool,
 ) -> Response {
-    if let Some(auth_header) = headers.get("authorization") {
-        req = req.header("authorization", auth_header);
-    } else if let Some(api_key) = &state.upstream_api_key {
-        req = req.bearer_auth(api_key);
-    }
+    req = apply_openai_upstream_headers(req, &headers, state.as_ref());
 
     match req.send().await {
         Ok(resp) => {
@@ -762,7 +858,7 @@ async fn proxy_upstream_tracking_response(
 
             if is_event_stream(&headers) {
                 if persist_response {
-                    let tracker = Arc::new(ResponseTracker::new(state, upstream, input));
+                    let tracker = Arc::new(ResponseTracker::new(state.clone(), upstream, input));
                     let stream = resp
                         .bytes_stream()
                         .inspect_ok(move |chunk| tracker.observe(chunk));
@@ -978,17 +1074,7 @@ impl ResponseTracker {
     }
 }
 
-async fn proxy_upstream(
-    state: &AppState,
-    headers: HeaderMap,
-    mut req: reqwest::RequestBuilder,
-) -> Response {
-    if let Some(auth_header) = headers.get("authorization") {
-        req = req.header("authorization", auth_header);
-    } else if let Some(api_key) = &state.upstream_api_key {
-        req = req.bearer_auth(api_key);
-    }
-
+async fn proxy_upstream_request(req: reqwest::RequestBuilder) -> Response {
     match req.send().await {
         Ok(resp) => {
             let status = resp.status();
@@ -1243,5 +1329,136 @@ mod tests {
         assert!(!parse_bool_env("DUIHUA_TEST_BOOL", true));
         env::remove_var("DUIHUA_TEST_BOOL");
         assert!(parse_bool_env("DUIHUA_TEST_BOOL", true));
+    }
+
+    #[test]
+    fn deserializes_messages_request_without_model() {
+        let request = serde_json::from_value::<MessagesRequest>(json!({
+            "max_tokens": 256,
+            "messages": [{"role": "user", "content": "Hello"}]
+        }))
+        .expect("valid messages request");
+
+        assert_eq!(request.model, None);
+    }
+
+    #[test]
+    fn applies_default_anthropic_version_and_upstream_bearer_auth() {
+        let state = AppState {
+            upstream_base: "http://default:8000/v1".to_string(),
+            model_upstreams: HashMap::new(),
+            default_model: "model-default".to_string(),
+            upstream_api_key: Some("upstream-secret".to_string()),
+            client: Client::new(),
+            responses_api_store_enabled: false,
+            response_store: None,
+            background_jobs: None,
+        };
+        let headers = HeaderMap::new();
+        let req =
+            apply_anthropic_upstream_headers(Client::new().post("http://test"), &headers, &state);
+        let built = req.build().expect("request should build");
+        assert_eq!(
+            built
+                .headers()
+                .get("anthropic-version")
+                .and_then(|v| v.to_str().ok()),
+            Some("2023-06-01")
+        );
+        assert_eq!(
+            built.headers().get("x-api-key"),
+            None,
+            "configured upstream key should not be sent as x-api-key"
+        );
+        assert_eq!(
+            built
+                .headers()
+                .get("authorization")
+                .and_then(|v| v.to_str().ok()),
+            Some("Bearer upstream-secret")
+        );
+    }
+
+    #[test]
+    fn uses_upstream_bearer_instead_of_client_api_key() {
+        let state = AppState {
+            upstream_base: "http://default:8000/v1".to_string(),
+            model_upstreams: HashMap::new(),
+            default_model: "model-default".to_string(),
+            upstream_api_key: Some("upstream-secret".to_string()),
+            client: Client::new(),
+            responses_api_store_enabled: false,
+            response_store: None,
+            background_jobs: None,
+        };
+        let mut headers = HeaderMap::new();
+        headers.insert("x-api-key", "dummy".parse().unwrap());
+        headers.insert("anthropic-version", "2024-01-01".parse().unwrap());
+        headers.insert("anthropic-beta", "messages-2024-10-22".parse().unwrap());
+
+        let req =
+            apply_anthropic_upstream_headers(Client::new().post("http://test"), &headers, &state);
+        let built = req.build().expect("request should build");
+        assert_eq!(
+            built.headers().get("x-api-key"),
+            None,
+            "client x-api-key must not be forwarded when UPSTREAM_API_KEY is configured"
+        );
+        assert_eq!(
+            built
+                .headers()
+                .get("authorization")
+                .and_then(|v| v.to_str().ok()),
+            Some("Bearer upstream-secret")
+        );
+        assert_eq!(
+            built
+                .headers()
+                .get("anthropic-version")
+                .and_then(|v| v.to_str().ok()),
+            Some("2024-01-01")
+        );
+        assert_eq!(
+            built
+                .headers()
+                .get("anthropic-beta")
+                .and_then(|v| v.to_str().ok()),
+            Some("messages-2024-10-22")
+        );
+    }
+
+    #[test]
+    fn forwards_client_auth_when_upstream_api_key_unset() {
+        let state = AppState {
+            upstream_base: "http://default:8000/v1".to_string(),
+            model_upstreams: HashMap::new(),
+            default_model: "model-default".to_string(),
+            upstream_api_key: None,
+            client: Client::new(),
+            responses_api_store_enabled: false,
+            response_store: None,
+            background_jobs: None,
+        };
+        let mut headers = HeaderMap::new();
+        headers.insert("x-api-key", "client-secret".parse().unwrap());
+        headers.insert("authorization", "Bearer client-bearer".parse().unwrap());
+
+        let req =
+            apply_anthropic_upstream_headers(Client::new().post("http://test"), &headers, &state);
+        let built = req.build().expect("request should build");
+        assert_eq!(
+            built
+                .headers()
+                .get("x-api-key")
+                .and_then(|v| v.to_str().ok()),
+            Some("client-secret")
+        );
+        assert_eq!(
+            built
+                .headers()
+                .get("authorization")
+                .and_then(|v| v.to_str().ok()),
+            Some("Bearer client-bearer")
+        );
     }
 }

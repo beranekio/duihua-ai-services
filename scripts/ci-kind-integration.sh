@@ -45,7 +45,7 @@ gateway_deployment="${RELEASE_NAME}-duihua-ai-services-gateway"
 echo "Gateway upstream configuration:"
 kubectl get deployment "${gateway_deployment}" -n "${NAMESPACE}" \
   -o jsonpath='{range .spec.template.spec.containers[0].env[*]}{.name}={.value}{"\n"}{end}' \
-  | rg '^UPSTREAM_BASE_URL=|^MODEL_UPSTREAMS='
+  | grep -E '^UPSTREAM_BASE_URL=|^MODEL_UPSTREAMS='
 
 run_step "Running gateway smoke tests"
 "${ROOT_DIR}/scripts/smoke-test-kind.sh"

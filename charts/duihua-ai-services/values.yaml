@@ -33,6 +33,14 @@ gateway:
       # Defaults to gateway.resources when unset.
       resources: {}
 
+backgroundWorker:
+  # Separate image for background Responses API Jobs.
+  # The gateway deployment still uses gateway.image; only Jobs use the worker image.
+  image:
+    repository: ghcr.io/example/duihua-background-worker
+    tag: "0.1.0"
+    pullPolicy: IfNotPresent
+
 inference:
   enabled: true
   image:

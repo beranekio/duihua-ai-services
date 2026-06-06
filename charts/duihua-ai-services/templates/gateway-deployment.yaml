@@ -52,9 +52,9 @@ spec:
             - name: RESPONSES_BACKGROUND_JOBS_ENABLED
               value: "true"
             - name: BACKGROUND_JOB_IMAGE
-              value: "{{ .Values.gateway.image.repository }}:{{ .Values.gateway.image.tag }}"
+              value: "{{ .Values.backgroundWorker.image.repository }}:{{ .Values.backgroundWorker.image.tag }}"
             - name: BACKGROUND_JOB_IMAGE_PULL_POLICY
-              value: {{ .Values.gateway.image.pullPolicy | quote }}
+              value: {{ .Values.backgroundWorker.image.pullPolicy | quote }}
             - name: BACKGROUND_JOB_SERVICE_ACCOUNT_NAME
               value: {{ include "duihua.serviceAccountName" . | quote }}
             - name: BACKGROUND_JOB_TTL_SECONDS_AFTER_FINISHED

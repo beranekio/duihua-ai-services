@@ -25,6 +25,12 @@ gateway:
     backgroundJobs:
       enabled: true
 
+backgroundWorker:
+  image:
+    repository: duihua-background-worker
+    tag: kind
+    pullPolicy: IfNotPresent
+
 inference:
   enabled: true
   image:

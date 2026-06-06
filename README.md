@@ -11,18 +11,22 @@ Duihua AI Services is an OpenAI API-compatible platform for serving open-source 
 
 ## Repository layout
 
-- `services/gateway`: Rust gateway service.
+- `services/gateway`: Rust API gateway service.
+- `services/background-worker`: Lean Rust worker for background Responses API Jobs.
+- `services/common`: Shared Rust library used by the gateway and background worker.
 - `charts/duihua-ai-services`: Helm chart for full deployment.
 - `scripts/`: Local kind bootstrap and deployment helpers.
 - `docs/`: Operational guidance.
 
 ## Quick start
 
-### 1) Build gateway image
+### 1) Build gateway and background worker images
 
 ```bash
-docker build -t ghcr.io/<org>/duihua-gateway:0.1.0 services/gateway
+docker build -t ghcr.io/<org>/duihua-gateway:0.1.0 --file services/gateway/Dockerfile services
+docker build -t ghcr.io/<org>/duihua-background-worker:0.1.0 --file services/background-worker/Dockerfile services
 docker push ghcr.io/<org>/duihua-gateway:0.1.0
+docker push ghcr.io/<org>/duihua-background-worker:0.1.0
 ```
 
 ### 2) Deploy with Helm
@@ -49,7 +53,9 @@ helm upgrade --install duihua charts/duihua-ai-services \
   --namespace duihua \
   --create-namespace \
   --set gateway.image.repository=ghcr.io/<org>/duihua-gateway \
-  --set gateway.image.tag=0.1.0
+  --set gateway.image.tag=0.1.0 \
+  --set backgroundWorker.image.repository=ghcr.io/<org>/duihua-background-worker \
+  --set backgroundWorker.image.tag=0.1.0
 ```
 
 ### 3) Call the API
@@ -92,7 +98,7 @@ To use an external Valkey/Redis-compatible service instead, keep `valkey.enabled
 
 For local Docker Compose, set `RESPONSES_API_STORE_ENABLED=true` when starting the stack to exercise persisted follow-up Responses API calls. Streaming responses are persisted after their `response.completed` event.
 
-With the Helm chart, `background=true` Responses API requests are executed asynchronously by Kubernetes Jobs (same gateway image, synchronous upstream call, result written to Valkey). Enable both `gateway.responsesApiStore.enabled=true` and `valkey.enabled=true` (or an external response store URL). Background jobs are on by default when the store is enabled (`gateway.responsesApiStore.backgroundJobs.enabled`). The kind workflow (`values-kind.yaml`) enables the store, Valkey, and background jobs for local testing.
+With the Helm chart, `background=true` Responses API requests are executed asynchronously by Kubernetes Jobs that run the dedicated `duihua-background-worker` image (synchronous upstream call, result written to Valkey). Enable both `gateway.responsesApiStore.enabled=true` and `valkey.enabled=true` (or an external response store URL). Background jobs are on by default when the store is enabled (`gateway.responsesApiStore.backgroundJobs.enabled`). The kind workflow (`values-kind.yaml`) enables the store, Valkey, and background jobs for local testing.
 
 ## Cloud-provider independence
 
@@ -158,7 +164,7 @@ scripts/create-kind-cluster.sh
 # 2) Install/upgrade KEDA and KEDA HTTP add-on
 scripts/install-keda.sh
 
-# 3) Build local gateway image and load it into kind
+# 3) Build local gateway and background worker images and load them into kind
 scripts/build-and-load-images.sh
 
 # 4) Deploy Helm chart, restart gateway pods, and verify rollout status
@@ -194,6 +200,8 @@ Useful environment variables:
 - `NAMESPACE` (default: `duihua`)
 - `GATEWAY_IMAGE_REPO` (default: `duihua-gateway`)
 - `GATEWAY_IMAGE_TAG` (default: `local`)
+- `BACKGROUND_WORKER_IMAGE_REPO` (default: `duihua-background-worker`)
+- `BACKGROUND_WORKER_IMAGE_TAG` (default: same as `GATEWAY_IMAGE_TAG`)
 - `GATEWAY_ROLLOUT_RESTART` (default: `true`, used by `scripts/build-and-load-images.sh` and `scripts/deploy-kind.sh`)
 - `INFERENCE_ENABLED` (default: `true`)
 - `VALUES_FILE` (default: `charts/duihua-ai-services/values-kind.yaml`)

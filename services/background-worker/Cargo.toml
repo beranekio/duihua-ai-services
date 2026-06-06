@@ -1,0 +1,16 @@
+[package]
+name = "duihua-background-worker"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "duihua-background-worker"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+duihua-common = { path = "../common" }
+reqwest = { version = "0.13", features = ["json", "rustls", "stream"], default-features = false }
+rustls = { version = "0.23", features = ["aws-lc-rs"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }

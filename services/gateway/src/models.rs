@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use crate::store::StoredResponse;
+use duihua_common::StoredResponse;
 
 #[derive(Serialize)]
 pub struct ModelListResponse {

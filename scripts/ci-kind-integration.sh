@@ -26,7 +26,7 @@ run_step() {
 run_step "Installing KEDA"
 "${ROOT_DIR}/scripts/install-keda.sh"
 
-run_step "Building and loading gateway image"
+run_step "Building and loading gateway and background worker images"
 "${ROOT_DIR}/scripts/build-and-load-images.sh"
 
 run_step "Pulling and loading mock-vllm image"

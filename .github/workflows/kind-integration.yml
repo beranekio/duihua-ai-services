@@ -8,6 +8,10 @@ on:
       - charts/**
       - kind/**
       - scripts/**
+      - services/Cargo.toml
+      - services/Cargo.lock
+      - services/common/**
+      - services/background-worker/**
       - services/gateway/**
   push:
     branches:
@@ -17,6 +21,10 @@ on:
       - charts/**
       - kind/**
       - scripts/**
+      - services/Cargo.toml
+      - services/Cargo.lock
+      - services/common/**
+      - services/background-worker/**
       - services/gateway/**
   workflow_dispatch:
 

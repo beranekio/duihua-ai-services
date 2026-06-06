@@ -52,7 +52,7 @@ spec:
             - name: BACKGROUND_QUEUE_STREAM_KEY
               value: {{ include "duihua.background.streamKey" . | quote }}
             - name: BACKGROUND_RESPONSE_STALE_SECONDS
-              value: {{ .Values.backgroundWorker.staleSeconds | quote }}
+              value: {{ include "duihua.background.staleSeconds" . | quote }}
             {{- end }}
             - name: MODEL_UPSTREAMS
               {{ if .Values.inference.enabled }}

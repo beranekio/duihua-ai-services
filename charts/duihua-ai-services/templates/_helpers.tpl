@@ -51,3 +51,12 @@ true
 {{- .Values.backgroundWorker.streamKey -}}
 {{- end -}}
 {{- end -}}
+
+{{- define "duihua.background.staleSeconds" -}}
+{{- $legacyStaleSeconds := dig "backgroundJobs" "staleSeconds" "" .Values.gateway.responsesApiStore -}}
+{{- if $legacyStaleSeconds -}}
+{{- $legacyStaleSeconds -}}
+{{- else -}}
+{{- .Values.backgroundWorker.staleSeconds -}}
+{{- end -}}
+{{- end -}}

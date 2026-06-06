@@ -1,4 +1,8 @@
-use std::{env, time::Duration};
+use std::{
+    collections::HashMap,
+    env,
+    time::{Duration, Instant},
+};
 
 use anyhow::{bail, Context, Result};
 use duihua_common::response_store_from_env;
@@ -6,7 +10,7 @@ use redis::{
     aio::ConnectionManager,
     streams::{
         StreamAutoClaimOptions, StreamAutoClaimReply, StreamDeletionPolicy, StreamId,
-        StreamReadOptions,
+        StreamPendingCountReply, StreamRangeReply, StreamReadOptions,
     },
     AsyncCommands, RedisError,
 };
@@ -86,8 +90,17 @@ pub async fn run() -> Result<()> {
     drain_pending_at_startup(&mut connection, &config, &response_store).await;
 
     let mut autoclaim_cursor = "0-0".to_string();
+    let mut pending_retries = PendingRetryScheduler::new();
 
     loop {
+        process_due_pending_retries(
+            &mut connection,
+            &config,
+            &response_store,
+            &mut pending_retries,
+        )
+        .await;
+
         let autoclaim_result: Result<StreamAutoClaimReply, RedisError> = connection
             .xautoclaim_options(
                 &config.stream_key,
@@ -95,7 +108,7 @@ pub async fn run() -> Result<()> {
                 &config.consumer_name,
                 config.autoclaim_min_idle_ms,
                 &autoclaim_cursor,
-                StreamAutoClaimOptions::default().count(config.autoclaim_batch_size),
+                StreamAutoClaimOptions::default().count(1),
             )
             .await;
         match autoclaim_result {
@@ -107,7 +120,7 @@ pub async fn run() -> Result<()> {
                     &response_store,
                     &autoclaim.claimed,
                     EntrySource::Autoclaimed,
-                    false,
+                    &mut pending_retries,
                 )
                 .await;
             }
@@ -144,7 +157,7 @@ pub async fn run() -> Result<()> {
                     &response_store,
                     &entries,
                     EntrySource::Live,
-                    false,
+                    &mut pending_retries,
                 )
                 .await;
             }
@@ -161,55 +174,134 @@ pub async fn run() -> Result<()> {
                 sleep_on_redis_error().await;
             }
         }
-
-        drain_pending_live_retry(&mut connection, &config, &response_store).await;
     }
 }
 
-async fn drain_pending_live_retry(
+#[derive(Debug)]
+struct PendingRetryEntry {
+    response_id: String,
+    retry_at: Instant,
+}
+
+#[derive(Debug, Default)]
+struct PendingRetryScheduler {
+    entries: HashMap<String, PendingRetryEntry>,
+}
+
+impl PendingRetryScheduler {
+    fn new() -> Self {
+        Self::default()
+    }
+
+    fn schedule(&mut self, stream_id: String, response_id: String, backoff: Duration) {
+        self.entries.insert(
+            stream_id,
+            PendingRetryEntry {
+                response_id,
+                retry_at: Instant::now() + backoff,
+            },
+        );
+    }
+
+    fn remove(&mut self, stream_id: &str) {
+        self.entries.remove(stream_id);
+    }
+
+    fn due_stream_ids(&self) -> Vec<String> {
+        let now = Instant::now();
+        self.entries
+            .iter()
+            .filter(|(_, entry)| entry.retry_at <= now)
+            .map(|(stream_id, _)| stream_id.clone())
+            .collect()
+    }
+}
+
+async fn process_due_pending_retries(
     connection: &mut ConnectionManager,
     config: &QueueConfig,
     response_store: &duihua_common::ResponseStore,
+    pending_retries: &mut PendingRetryScheduler,
 ) {
-    let pending_opts = StreamReadOptions::default()
-        .group(&config.consumer_group, &config.consumer_name)
-        .count(config.autoclaim_batch_size);
-
-    let read_result: Result<Option<redis::streams::StreamReadReply>, RedisError> = connection
-        .xread_options(&[&config.stream_key], &["0"], &pending_opts)
-        .await;
-
-    match read_result {
-        Ok(Some(reply)) => {
-            let entries: Vec<StreamId> = reply
-                .keys
-                .iter()
-                .flat_map(|key| key.ids.iter().cloned())
-                .collect();
-            if entries.is_empty() {
-                return;
+    let due_stream_ids = pending_retries.due_stream_ids();
+    for stream_id in due_stream_ids {
+        let Some(retry_entry) = pending_retries.entries.get(&stream_id) else {
+            continue;
+        };
+        let response_id = retry_entry.response_id.clone();
+        let idle_ms = pending_idle_ms(connection, config, &stream_id)
+            .await
+            .unwrap_or(None);
+        let Some(message) = load_queue_message(connection, config, &stream_id, idle_ms).await
+        else {
+            eprintln!("pending retry entry {stream_id} missing from stream; acknowledging");
+            if acknowledge_message(connection, config, &stream_id)
+                .await
+                .is_ok()
+            {
+                pending_retries.remove(&stream_id);
             }
-            process_stream_entries(
-                connection,
-                config,
-                response_store,
-                &entries,
-                EntrySource::Live,
-                false,
-            )
-            .await;
-        }
-        Ok(None) => {}
-        Err(err) if is_nogroup(&err) => {
-            eprintln!("background queue consumer group missing during pending retry; recreating");
-            if let Err(ensure_err) = ensure_consumer_group(connection, config).await {
-                eprintln!("failed to recreate background queue consumer group: {ensure_err:?}");
+            continue;
+        };
+
+        match handle_message(
+            connection,
+            config,
+            response_store,
+            message,
+            EntrySource::Live,
+        )
+        .await
+        {
+            Ok(()) => pending_retries.remove(&stream_id),
+            Err(err) if err.downcast_ref::<RetryableMessageError>().is_some() => {
+                pending_retries.schedule(stream_id, response_id, pending_retry_backoff_from_env());
             }
-        }
-        Err(err) => {
-            eprintln!("failed to retry pending background queue messages: {err:?}");
+            Err(err) => {
+                eprintln!(
+                    "failed pending retry for background queue message {response_id}: {err:?}"
+                );
+                pending_retries.schedule(stream_id, response_id, pending_retry_backoff_from_env());
+            }
         }
     }
+}
+
+async fn pending_idle_ms(
+    connection: &mut ConnectionManager,
+    config: &QueueConfig,
+    stream_id: &str,
+) -> Result<Option<u64>> {
+    let pending: StreamPendingCountReply = connection
+        .xpending_consumer_count(
+            &config.stream_key,
+            &config.consumer_group,
+            stream_id,
+            stream_id,
+            1,
+            &config.consumer_name,
+        )
+        .await?;
+    Ok(pending
+        .ids
+        .first()
+        .map(|entry| entry.last_delivered_ms as u64))
+}
+
+async fn load_queue_message(
+    connection: &mut ConnectionManager,
+    config: &QueueConfig,
+    stream_id: &str,
+    idle_ms: Option<u64>,
+) -> Option<QueueMessage> {
+    let range: StreamRangeReply = connection
+        .xrange(&config.stream_key, stream_id, stream_id)
+        .await
+        .ok()?;
+    let entry = range.ids.first()?;
+    let mut message = queue_message_from_stream_entry(entry)?;
+    message.idle_ms = idle_ms.or(message.idle_ms);
+    Some(message)
 }
 
 async fn drain_pending_at_startup(
@@ -217,16 +309,19 @@ async fn drain_pending_at_startup(
     config: &QueueConfig,
     response_store: &duihua_common::ResponseStore,
 ) {
-    let pending_opts = StreamReadOptions::default()
-        .group(&config.consumer_group, &config.consumer_name)
-        .count(config.autoclaim_batch_size);
-
     loop {
-        let reply: Option<redis::streams::StreamReadReply> = match connection
-            .xread_options(&[&config.stream_key], &["0"], &pending_opts)
+        let pending: StreamPendingCountReply = match connection
+            .xpending_consumer_count(
+                &config.stream_key,
+                &config.consumer_group,
+                "-",
+                "+",
+                config.autoclaim_batch_size,
+                &config.consumer_name,
+            )
             .await
         {
-            Ok(reply) => reply,
+            Ok(pending) => pending,
             Err(err) if is_nogroup(&err) => {
                 eprintln!(
                     "background queue consumer group missing during startup drain; recreating"
@@ -243,37 +338,49 @@ async fn drain_pending_at_startup(
             }
         };
 
-        let Some(reply) = reply else {
-            break;
-        };
-
-        let entries: Vec<StreamId> = reply
-            .keys
-            .iter()
-            .flat_map(|key| key.ids.iter().cloned())
-            .collect();
-        if entries.is_empty() {
+        if pending.ids.is_empty() {
             break;
         }
 
-        if process_stream_entries(
-            connection,
-            config,
-            response_store,
-            &entries,
-            EntrySource::StartupPending,
-            true,
-        )
-        .await
-        .stopped_on_error
-        {
+        let mut stopped_on_error = false;
+        for pending_id in pending.ids {
+            let idle_ms = Some(pending_id.last_delivered_ms as u64);
+            let stream_id = pending_id.id.clone();
+            let Some(message) = load_queue_message(connection, config, &stream_id, idle_ms).await
+            else {
+                eprintln!("acknowledging malformed startup pending entry {stream_id}");
+                if acknowledge_message(connection, config, &stream_id)
+                    .await
+                    .is_err()
+                {
+                    stopped_on_error = true;
+                    break;
+                }
+                continue;
+            };
+
+            match handle_message(
+                connection,
+                config,
+                response_store,
+                message,
+                EntrySource::StartupPending,
+            )
+            .await
+            {
+                Ok(()) => {}
+                Err(err) => {
+                    eprintln!("failed to process startup pending entry {stream_id}: {err:?}");
+                    stopped_on_error = true;
+                    break;
+                }
+            }
+        }
+
+        if stopped_on_error {
             break;
         }
     }
-}
-
-struct ProcessBatchOutcome {
-    stopped_on_error: bool,
 }
 
 async fn process_stream_entries(
@@ -282,41 +389,30 @@ async fn process_stream_entries(
     response_store: &duihua_common::ResponseStore,
     entries: &[StreamId],
     entry_source: EntrySource,
-    stop_on_error: bool,
-) -> ProcessBatchOutcome {
+    pending_retries: &mut PendingRetryScheduler,
+) {
     let (messages, invalid_ids) = split_stream_entries(entries);
-    let mut stopped_on_error = false;
 
     for stream_id in invalid_ids {
         eprintln!("acknowledging malformed background queue entry {stream_id}");
         if let Err(err) = acknowledge_message(connection, config, &stream_id).await {
             eprintln!("failed to acknowledge malformed entry {stream_id}: {err:?}");
-            if stop_on_error {
-                stopped_on_error = true;
-                break;
-            }
         }
-    }
-
-    if stopped_on_error {
-        return ProcessBatchOutcome { stopped_on_error };
     }
 
     for message in messages {
         let response_id = message.response_id.clone();
+        let stream_id = message.stream_id.clone();
         match handle_message(connection, config, response_store, message, entry_source).await {
             Ok(()) => {}
+            Err(err) if err.downcast_ref::<RetryableMessageError>().is_some() => {
+                pending_retries.schedule(stream_id, response_id, pending_retry_backoff_from_env());
+            }
             Err(err) => {
                 eprintln!("failed to process background queue message {response_id}: {err:?}");
-                if stop_on_error || err.downcast_ref::<RetryableMessageError>().is_some() {
-                    stopped_on_error = true;
-                    break;
-                }
             }
         }
     }
-
-    ProcessBatchOutcome { stopped_on_error }
 }
 
 async fn ensure_consumer_group(
@@ -387,7 +483,6 @@ async fn acknowledge_message(
             let _: usize = connection
                 .xack(&config.stream_key, &config.consumer_group, &ids)
                 .await?;
-            let _: usize = connection.xdel(&config.stream_key, &ids).await?;
             Ok(())
         }
         Err(err) => Err(err).context("failed to acknowledge background queue message"),
@@ -398,6 +493,14 @@ fn default_autoclaim_min_idle_ms() -> usize {
     upstream_timeout_seconds_from_env()
         .saturating_add(120)
         .saturating_mul(1000)
+}
+
+fn pending_retry_backoff_from_env() -> Duration {
+    env::var("BACKGROUND_QUEUE_PENDING_RETRY_SECONDS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .map(Duration::from_secs)
+        .unwrap_or(Duration::from_secs(30))
 }
 
 fn upstream_timeout_seconds_from_env() -> usize {
@@ -575,5 +678,18 @@ mod tests {
             Some("NOGROUP No such key or consumer group".to_string()),
         );
         assert!(is_nogroup(&err));
+    }
+
+    #[test]
+    fn pending_retry_scheduler_honors_backoff() {
+        let mut scheduler = PendingRetryScheduler::new();
+        scheduler.schedule(
+            "1-0".to_string(),
+            "resp_a".to_string(),
+            Duration::from_secs(60),
+        );
+        assert!(scheduler.due_stream_ids().is_empty());
+        scheduler.entries.get_mut("1-0").unwrap().retry_at = Instant::now();
+        assert_eq!(scheduler.due_stream_ids(), vec!["1-0".to_string()]);
     }
 }

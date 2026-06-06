@@ -65,7 +65,9 @@ This path does not change inference Deployments or vLLM flags. Tune `backgroundW
 
 Enable KEDA stream-lag autoscaling with `backgroundWorker.autoscaling.enabled=true`. The chart renders a `ScaledObject` that scales the worker Deployment from consumer-group lag on the background queue stream (`backgroundWorker.streamKey`, group `backgroundWorker.consumerGroup`). This uses KEDA's `redis-streams` scaler with `lagCount` and `activationLagCount`; only KEDA core is required (not the HTTP add-on).
 
-- **Scale-to-zero:** set `backgroundWorker.autoscaling.replicas.min` to `0`. Requires Valkey/Redis 7+ for lag-based scaling (the chart's Valkey 9.x image qualifies). Tune `activationLagCount` so brief idle periods do not flap replicas.
+- **Scale-to-zero:** set `backgroundWorker.autoscaling.replicas.min` to `0`. Requires Valkey/Redis 7+ for lag-based scaling (the chart's Valkey 9.x image qualifies). Keep `activationLagCount` at `0` so a single queued job activates scaling (KEDA compares lag with `>`). Tune `lagCount` if brief idle periods flap replicas.
+- **External Redis:** the ScaledObject parses `gateway.env.responseIdStoreUrl` with Helm `urlParse` for `host:port`, enables TLS when the scheme is `rediss://`, and can set `passwordFromEnv` to an env var present on worker pods.
+- **In-flight jobs:** lag drops once a message is claimed; long upstream calls can be interrupted if `scaledownPeriod` elapses before completion (see issue #52).
 - **Warm minimum:** set `replicas.min` to `1` or higher when you want a worker always ready (the kind defaults use `min: 1` so smoke tests do not depend on cold-start latency).
 - **Thresholds:** `lagCount` is the average lag target per replica; lower values scale up sooner. `maxConcurrentJobs` still limits upstream calls per pod.
 - **Redis address:** when using the chart-managed Valkey Service, the ScaledObject uses a cluster DNS FQDN (`<release>-valkey.<namespace>.svc.cluster.local`) so KEDA (typically in the `keda` namespace) can reach Redis. For an external store, set `gateway.env.responseIdStoreUrl` to a hostname KEDA can resolve cluster-wide.

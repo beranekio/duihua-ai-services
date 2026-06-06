@@ -38,7 +38,7 @@ backgroundWorker:
   autoscaling:
     enabled: true
     lagCount: 1
-    activationLagCount: 1
+    activationLagCount: 0
     pollingInterval: 5
     scaledownPeriod: 60
     replicas:

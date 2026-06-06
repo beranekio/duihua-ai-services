@@ -47,11 +47,19 @@ backgroundWorker:
     # Scale the worker Deployment from Valkey stream consumer-group lag via KEDA.
     # Requires KEDA installed in the cluster (no HTTP add-on needed for this scaler).
     # Use lagCount + activationLagCount for scale-to-zero; Valkey/Redis 7+ is required.
+    # activationLagCount must be 0 for the first queued job to wake a worker (KEDA uses >).
+    # Lag-only scaling can scale down while jobs are in-flight; see issue #52 and tune
+    # scaledownPeriod relative to upstream job duration when min is 0.
     enabled: false
     lagCount: 5
-    activationLagCount: 1
+    activationLagCount: 0
     scaledownPeriod: 300
     pollingInterval: 15
+    # Set enableTLS or use a rediss:// responseIdStoreUrl for TLS. passwordFromEnv names an
+    # env var on the worker Deployment (for example from a Secret); KEDA reads it from the
+    # scale target pod.
+    enableTLS: false
+    passwordFromEnv: ""
     replicas:
       min: 1
       max: 4

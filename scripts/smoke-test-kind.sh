@@ -404,6 +404,8 @@ test_background_worker_autoscaling() {
   local initial_replicas max_replicas
   initial_replicas="$(kubectl get deployment "${deployment}" -n "${NAMESPACE}" -o jsonpath='{.spec.replicas}')"
   max_replicas="$(kubectl get scaledobject "${scaledobject}" -n "${NAMESPACE}" -o jsonpath='{.spec.maxReplicaCount}')"
+  initial_replicas="${initial_replicas:-0}"
+  max_replicas="${max_replicas:-0}"
 
   echo "ScaledObject ${scaledobject} present (replicas=${initial_replicas}, max=${max_replicas})"
 
@@ -421,6 +423,7 @@ test_background_worker_autoscaling() {
   local attempt current_replicas
   for attempt in $(seq 1 "${AUTOSCALE_POLL_ATTEMPTS}"); do
     current_replicas="$(kubectl get deployment "${deployment}" -n "${NAMESPACE}" -o jsonpath='{.spec.replicas}')"
+    current_replicas="${current_replicas:-0}"
     if [[ "${current_replicas}" -gt "${initial_replicas}" ]]; then
       echo "worker scaled up from ${initial_replicas} to ${current_replicas} replica(s)"
       return 0

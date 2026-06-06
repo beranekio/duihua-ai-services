@@ -110,14 +110,14 @@ backgroundWorker:
   autoscaling:
     enabled: true
     lagCount: 5
-    activationLagCount: 1
+    activationLagCount: 0
     scaledownPeriod: 300
     replicas:
       min: 0   # scale-to-zero when idle (requires Valkey/Redis 7+)
       max: 4
 ```
 
-Set `replicas.min` to `1` or higher to keep at least one worker pod warm. Scale-to-zero uses `lagCount` and `activationLagCount`; the bundled chart Valkey image (9.x) satisfies the Redis 7+ requirement. When autoscaling is enabled, KEDA owns replica counts and `backgroundWorker.replicaCount` is ignored.
+Set `replicas.min` to `1` or higher to keep at least one worker pod warm. Use `activationLagCount: 0` so the first queued job wakes a worker (KEDA activates only when lag is strictly greater than this threshold). For external Redis with TLS or auth, use a `rediss://` `responseIdStoreUrl` and/or `backgroundWorker.autoscaling.passwordFromEnv` (env var name on the worker pod). Scale-to-zero uses `lagCount` and `activationLagCount`; the bundled chart Valkey image (9.x) satisfies the Redis 7+ requirement. When autoscaling is enabled, KEDA owns replica counts and `backgroundWorker.replicaCount` is ignored. Lag-only scaling can scale down while upstream jobs are still running; tune `scaledownPeriod` or track issue #52 for graceful drain.
 
 ## Cloud-provider independence
 

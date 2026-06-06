@@ -5,7 +5,7 @@ metadata:
   name: {{ include "duihua.fullname" . }}-background-worker
 spec:
   {{- if eq (include "duihua.background.autoscaling.enabled" .) "true" }}
-  replicas: {{ .Values.backgroundWorker.autoscaling.replicas.min | default 1 }}
+  replicas: {{ include "duihua.background.autoscaling.minReplicas" . }}
   {{- else }}
   replicas: {{ .Values.backgroundWorker.replicaCount }}
   {{- end }}

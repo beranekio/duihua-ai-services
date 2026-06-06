@@ -38,8 +38,51 @@ redis://{{ include "duihua.fullname" . }}-valkey:{{ .Values.valkey.service.port 
 {{- if .Values.valkey.enabled -}}
 {{- printf "%s-valkey.%s.svc.cluster.local:%v" (include "duihua.fullname" .) .Release.Namespace .Values.valkey.service.port -}}
 {{- else -}}
-{{- $url := .Values.gateway.env.responseIdStoreUrl -}}
-{{- trimPrefix "rediss://" (trimPrefix "redis://" $url) -}}
+{{- (urlParse .Values.gateway.env.responseIdStoreUrl).host -}}
+{{- end -}}
+{{- end -}}
+
+{{- define "duihua.responseIdStoreTLSEnabled" -}}
+{{- if .Values.valkey.enabled -}}
+false
+{{- else -}}
+{{- eq (urlParse .Values.gateway.env.responseIdStoreUrl).scheme "rediss" -}}
+{{- end -}}
+{{- end -}}
+
+{{- define "duihua.responseIdStoreDatabaseIndex" -}}
+{{- if .Values.valkey.enabled -}}
+0
+{{- else -}}
+{{- $path := (urlParse .Values.gateway.env.responseIdStoreUrl).path | default "" -}}
+{{- trimPrefix "/" $path | default "0" -}}
+{{- end -}}
+{{- end -}}
+
+{{- define "duihua.background.autoscaling.minReplicas" -}}
+{{- $replicas := get .Values.backgroundWorker.autoscaling "replicas" | default dict -}}
+{{- if hasKey $replicas "min" -}}
+{{- $replicas.min -}}
+{{- else -}}
+1
+{{- end -}}
+{{- end -}}
+
+{{- define "duihua.background.autoscaling.maxReplicas" -}}
+{{- $replicas := get .Values.backgroundWorker.autoscaling "replicas" | default dict -}}
+{{- if hasKey $replicas "max" -}}
+{{- $replicas.max -}}
+{{- else -}}
+4
+{{- end -}}
+{{- end -}}
+
+{{- define "duihua.background.autoscaling.activationLagCount" -}}
+{{- $autoscaling := .Values.backgroundWorker.autoscaling | default dict -}}
+{{- if hasKey $autoscaling "activationLagCount" -}}
+{{- $autoscaling.activationLagCount -}}
+{{- else -}}
+0
 {{- end -}}
 {{- end -}}
 

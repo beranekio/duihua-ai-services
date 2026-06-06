@@ -90,7 +90,7 @@ pub async fn run() -> Result<()> {
     ensure_consumer_group(&mut connection, &config).await?;
     eprintln!(
         "background worker startup: recommended terminationGracePeriodSeconds={}",
-        recommended_termination_grace_period_seconds()
+        recommended_termination_grace_period_seconds_for_config(&config)
     );
     let job_concurrency = Arc::new(Semaphore::new(config.max_concurrent_jobs));
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
@@ -128,47 +128,58 @@ pub async fn run() -> Result<()> {
         }
 
         if !shutdown_triggered(&shutdown_rx) {
-            let autoclaim_result: Result<StreamAutoClaimReply, RedisError> = connection
-                .xautoclaim_options(
-                    &config.stream_key,
-                    &config.consumer_group,
-                    &config.consumer_name,
-                    config.autoclaim_min_idle_ms,
-                    &autoclaim_cursor,
-                    StreamAutoClaimOptions::default().count(1),
-                )
-                .await;
-            match autoclaim_result {
-                Ok(autoclaim) => {
-                    autoclaim_cursor = autoclaim.next_stream_id;
-                    process_stream_entries(
-                        &mut connection,
-                        &config,
-                        &response_store,
-                        &autoclaim.claimed,
-                        EntrySource::Autoclaimed,
-                        pending_retries.clone(),
-                        job_concurrency.clone(),
-                        &mut join_set,
-                        &shutdown_rx,
+            if let Some(permit) =
+                try_acquire_job_permit(job_concurrency.clone(), &shutdown_rx).await
+            {
+                let autoclaim_result: Result<StreamAutoClaimReply, RedisError> = connection
+                    .xautoclaim_options(
+                        &config.stream_key,
+                        &config.consumer_group,
+                        &config.consumer_name,
+                        config.autoclaim_min_idle_ms,
+                        &autoclaim_cursor,
+                        StreamAutoClaimOptions::default().count(1),
                     )
                     .await;
-                }
-                Err(err) if is_nogroup(&err) => {
-                    eprintln!(
-                        "background queue consumer group missing during autoclaim; recreating"
-                    );
-                    if let Err(ensure_err) = ensure_consumer_group(&mut connection, &config).await {
+                match autoclaim_result {
+                    Ok(autoclaim) => {
+                        autoclaim_cursor = autoclaim.next_stream_id;
+                        process_stream_entries(
+                            &mut connection,
+                            &config,
+                            &response_store,
+                            &autoclaim.claimed,
+                            EntrySource::Autoclaimed,
+                            pending_retries.clone(),
+                            job_concurrency.clone(),
+                            &mut join_set,
+                            &shutdown_rx,
+                            Some(permit),
+                        )
+                        .await;
+                    }
+                    Err(err) if is_nogroup(&err) => {
+                        drop(permit);
                         eprintln!(
-                            "failed to recreate background queue consumer group: {ensure_err:?}"
+                            "background queue consumer group missing during autoclaim; recreating"
                         );
+                        if let Err(ensure_err) =
+                            ensure_consumer_group(&mut connection, &config).await
+                        {
+                            eprintln!(
+                                "failed to recreate background queue consumer group: {ensure_err:?}"
+                            );
+                            sleep_on_redis_error().await;
+                        }
+                    }
+                    Err(err) if is_blocking_command_timeout(&err) => {
+                        drop(permit);
+                    }
+                    Err(err) => {
+                        drop(permit);
+                        eprintln!("failed to auto-claim background queue messages: {err:?}");
                         sleep_on_redis_error().await;
                     }
-                }
-                Err(err) if is_blocking_command_timeout(&err) => {}
-                Err(err) => {
-                    eprintln!("failed to auto-claim background queue messages: {err:?}");
-                    sleep_on_redis_error().await;
                 }
             }
         }
@@ -177,9 +188,19 @@ pub async fn run() -> Result<()> {
             break;
         }
 
+        let Some(permit) = try_acquire_job_permit(job_concurrency.clone(), &shutdown_rx).await
+        else {
+            if shutdown_triggered(&shutdown_rx) {
+                break;
+            }
+            continue;
+        };
         match read_new_stream_entries(&mut connection, &config, &shutdown_rx).await {
-            ReadNewOutcome::Shutdown => break,
-            ReadNewOutcome::Idle => {}
+            ReadNewOutcome::Shutdown => {
+                drop(permit);
+                break;
+            }
+            ReadNewOutcome::Idle => drop(permit),
             ReadNewOutcome::Entries(entries) => {
                 process_stream_entries(
                     &mut connection,
@@ -191,17 +212,22 @@ pub async fn run() -> Result<()> {
                     job_concurrency.clone(),
                     &mut join_set,
                     &shutdown_rx,
+                    Some(permit),
                 )
                 .await;
             }
             ReadNewOutcome::NoGroup => {
+                drop(permit);
                 eprintln!("background queue consumer group missing during read; recreating");
                 if let Err(ensure_err) = ensure_consumer_group(&mut connection, &config).await {
                     eprintln!("failed to recreate background queue consumer group: {ensure_err:?}");
                     sleep_on_redis_error().await;
                 }
             }
-            ReadNewOutcome::RedisError => sleep_on_redis_error().await,
+            ReadNewOutcome::RedisError => {
+                drop(permit);
+                sleep_on_redis_error().await;
+            }
         }
     }
 
@@ -294,6 +320,20 @@ async fn read_new_stream_entries(
     }
 }
 
+async fn try_acquire_job_permit(
+    job_concurrency: Arc<Semaphore>,
+    shutdown_rx: &watch::Receiver<bool>,
+) -> Option<tokio::sync::OwnedSemaphorePermit> {
+    if shutdown_triggered(shutdown_rx) {
+        return None;
+    }
+    match job_concurrency.try_acquire_owned() {
+        Ok(_permit) if shutdown_triggered(shutdown_rx) => None,
+        Ok(permit) => Some(permit),
+        Err(_) => None,
+    }
+}
+
 async fn acquire_job_permit(
     job_concurrency: Arc<Semaphore>,
     shutdown_rx: &watch::Receiver<bool>,
@@ -343,12 +383,38 @@ async fn drain_in_flight_jobs(join_set: &mut JoinSet<()>) {
     }
 }
 
+#[allow(dead_code)]
 pub fn recommended_termination_grace_period_seconds_for_upstream(upstream_secs: usize) -> u64 {
-    upstream_secs.saturating_add(60).max(30) as u64
+    recommended_termination_grace_period_seconds_for_upstream_and_block(upstream_secs, 0)
 }
 
+pub fn recommended_termination_grace_period_seconds_for_config(config: &QueueConfig) -> u64 {
+    recommended_termination_grace_period_seconds_for_upstream_and_block(
+        upstream_timeout_seconds_from_env(),
+        config.block_ms,
+    )
+}
+
+pub fn recommended_termination_grace_period_seconds_for_upstream_and_block(
+    upstream_secs: usize,
+    block_ms: usize,
+) -> u64 {
+    let block_secs = block_ms.div_ceil(1000);
+    upstream_secs
+        .saturating_add(block_secs)
+        .saturating_add(60)
+        .max(30) as u64
+}
+
+#[allow(dead_code)]
 pub fn recommended_termination_grace_period_seconds() -> u64 {
-    recommended_termination_grace_period_seconds_for_upstream(upstream_timeout_seconds_from_env())
+    recommended_termination_grace_period_seconds_for_upstream_and_block(
+        upstream_timeout_seconds_from_env(),
+        env::var("BACKGROUND_QUEUE_BLOCK_MS")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(5_000),
+    )
 }
 
 #[derive(Debug)]
@@ -662,6 +728,7 @@ async fn process_stream_entries(
     job_concurrency: Arc<Semaphore>,
     join_set: &mut JoinSet<()>,
     shutdown_rx: &watch::Receiver<bool>,
+    mut reserved_permit: Option<tokio::sync::OwnedSemaphorePermit>,
 ) {
     let (messages, invalid_ids) = split_stream_entries(entries);
 
@@ -675,7 +742,10 @@ async fn process_stream_entries(
     for message in messages {
         let response_id = message.response_id.clone();
         let stream_id = message.stream_id.clone();
-        let Some(permit) = acquire_job_permit(job_concurrency.clone(), shutdown_rx, false).await
+        let Some(permit) =
+            reserved_permit
+                .take()
+                .or(try_acquire_job_permit(job_concurrency.clone(), shutdown_rx).await)
         else {
             break;
         };
@@ -727,6 +797,8 @@ async fn process_stream_entries(
             }
         });
     }
+
+    drop(reserved_permit);
 }
 
 async fn ensure_consumer_group(
@@ -1048,6 +1120,14 @@ mod tests {
         assert_eq!(
             recommended_termination_grace_period_seconds_for_upstream(600),
             660
+        );
+        assert_eq!(
+            recommended_termination_grace_period_seconds_for_upstream_and_block(600, 5_000),
+            665
+        );
+        assert_eq!(
+            recommended_termination_grace_period_seconds_for_upstream_and_block(600, 120_000),
+            780
         );
     }
 

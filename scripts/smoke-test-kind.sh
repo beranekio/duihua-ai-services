@@ -414,16 +414,23 @@ test_background_worker_autoscaling() {
     return 0
   fi
 
-  local lag_count jobs_to_enqueue
+  local lag_count max_concurrent_jobs jobs_to_enqueue
   lag_count="$(kubectl get scaledobject "${scaledobject}" -n "${NAMESPACE}" \
     -o jsonpath='{.spec.triggers[0].metadata.lagCount}' 2>/dev/null || true)"
   lag_count="${lag_count:-5}"
   if [[ ! "${lag_count}" =~ ^[0-9]+$ ]] || [[ "${lag_count}" -lt 1 ]]; then
     lag_count=5
   fi
-  jobs_to_enqueue=$((initial_replicas * lag_count + 1))
+  max_concurrent_jobs="$(kubectl get deployment "${deployment}" -n "${NAMESPACE}" \
+    -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="BACKGROUND_QUEUE_MAX_CONCURRENT_JOBS")].value}' 2>/dev/null || true)"
+  max_concurrent_jobs="${max_concurrent_jobs:-1}"
+  if [[ ! "${max_concurrent_jobs}" =~ ^[0-9]+$ ]] || [[ "${max_concurrent_jobs}" -lt 1 ]]; then
+    max_concurrent_jobs=1
+  fi
+  # Account for running workers claiming entries before KEDA polls.
+  jobs_to_enqueue=$(((initial_replicas + 1) * lag_count + initial_replicas * max_concurrent_jobs + 1))
 
-  echo "Enqueueing ${jobs_to_enqueue} background jobs to grow stream lag (lagCount=${lag_count}, replicas=${initial_replicas})..."
+  echo "Enqueueing ${jobs_to_enqueue} background jobs to grow stream lag (lagCount=${lag_count}, replicas=${initial_replicas}, maxConcurrentJobs=${max_concurrent_jobs})..."
   local job_index
   for job_index in $(seq 1 "${jobs_to_enqueue}"); do
     post_response "{\"model\":\"${DEFAULT_MODEL}\",\"input\":\"Autoscale lag test ${job_index}.\",\"background\":true}" >/dev/null

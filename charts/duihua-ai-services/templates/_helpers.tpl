@@ -86,6 +86,15 @@ false
 {{- end -}}
 {{- end -}}
 
+{{- define "duihua.background.autoscaling.scaledownPeriod" -}}
+{{- $autoscaling := .Values.backgroundWorker.autoscaling | default dict -}}
+{{- if hasKey $autoscaling "scaledownPeriod" -}}
+{{- $autoscaling.scaledownPeriod -}}
+{{- else -}}
+300
+{{- end -}}
+{{- end -}}
+
 {{- define "duihua.background.enabled" -}}
 {{- if ne (include "duihua.responsesApiStore.enabled" .) "true" -}}
 {{- else if not .Values.backgroundWorker.enabled -}}

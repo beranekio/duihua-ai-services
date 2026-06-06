@@ -16,7 +16,7 @@ spec:
     apiVersion: apps/v1
   minReplicaCount: {{ include "duihua.background.autoscaling.minReplicas" . }}
   maxReplicaCount: {{ include "duihua.background.autoscaling.maxReplicas" . }}
-  cooldownPeriod: {{ $autoscaling.scaledownPeriod | default 300 }}
+  cooldownPeriod: {{ include "duihua.background.autoscaling.scaledownPeriod" . }}
   {{- with $autoscaling.pollingInterval }}
   pollingInterval: {{ . }}
   {{- end }}

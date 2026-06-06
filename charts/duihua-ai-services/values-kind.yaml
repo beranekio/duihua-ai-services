@@ -24,6 +24,8 @@ gateway:
     enabled: true
     backgroundJobs:
       enabled: true
+      streamKey: duihua:responses:background
+      staleSeconds: 3600
 
 backgroundWorker:
   image:

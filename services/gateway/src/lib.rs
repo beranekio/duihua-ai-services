@@ -4,6 +4,7 @@ mod app;
 mod config;
 mod error;
 mod models;
+mod queue;
 mod routes;
 mod state;
 mod store;

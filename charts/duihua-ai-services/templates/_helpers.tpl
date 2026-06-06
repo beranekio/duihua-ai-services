@@ -26,12 +26,8 @@
 {{- end -}}
 {{- end -}}
 
-{{- define "duihua.backgroundJobs.enabled" -}}
+{{- define "duihua.background.enabled" -}}
 {{- if and (eq (include "duihua.responsesApiStore.enabled" .) "true") .Values.gateway.responsesApiStore.backgroundJobs.enabled -}}
 true
 {{- end -}}
-{{- end -}}
-
-{{- define "duihua.backgroundJob.resources" -}}
-{{- .Values.gateway.responsesApiStore.backgroundJobs.resources | default .Values.gateway.resources | toJson -}}
 {{- end -}}

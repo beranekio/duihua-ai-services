@@ -7,12 +7,13 @@ Duihua AI Services is an OpenAI API-compatible platform for serving open-source 
 - **Gateway (Rust, Axum)**: Provides OpenAI-compatible endpoints (`/v1/models`, `/v1/chat/completions`, `/v1/responses`, `/v1/embeddings`) and proxies requests to a model runtime.
 - **Inference runtime**: Optional bundled `vllm/vllm-openai` deployment for OSS model hosting.
 - **Responses API store (Valkey)**: Persists completed Responses API objects and conversation input so follow-up calls do not depend on inference runtime memory.
+- **Background worker (Rust)**: Consumes a Valkey stream queue and completes `background=true` Responses API requests via synchronous upstream calls.
 - **Kubernetes-first deployment**: Packaged as a cloud-provider-neutral Helm chart.
 
 ## Repository layout
 
 - `services/gateway`: Rust API gateway service.
-- `services/background-worker`: Lean Rust worker for background Responses API Jobs.
+- `services/background-worker`: Valkey stream consumer for background Responses API requests.
 - `services/common`: Shared Rust library used by the gateway and background worker.
 - `charts/duihua-ai-services`: Helm chart for full deployment.
 - `scripts/`: Local kind bootstrap and deployment helpers.
@@ -170,7 +171,7 @@ scripts/build-and-load-images.sh
 # 4) Deploy Helm chart, restart gateway pods, and verify rollout status
 scripts/deploy-kind.sh
 
-# 5) Exercise the gateway Responses API store and background jobs
+# 5) Exercise the gateway Responses API store and background worker queue
 scripts/smoke-test-kind.sh
 ```
 
@@ -213,7 +214,7 @@ Useful environment variables:
 
 ## CI
 
-- **Validate** (`.github/workflows/validate.yml`): Runs on PRs and pushes to `main`. Performs Rust formatting/clippy/tests, Hadolint on the gateway Dockerfile, `helm lint`, and `helm template` rendering.
-- **Kind Integration** (`.github/workflows/kind-integration.yml`): On PRs/pushes that touch the chart, kind assets, scripts, or gateway (manual trigger also available). Creates a kind cluster (`duihua-ci`), runs `scripts/ci-kind-integration.sh` (KEDA, gateway image build, `ghcr.io/beranekio/mock-vllm:latest` upstream, Helm deploy with `values-kind-ci.yaml`, `scripts/smoke-test-kind.sh`).
+- **Validate** (`.github/workflows/validate.yml`): Runs on PRs and pushes to `main`. Performs Rust formatting/clippy/tests, Hadolint on the gateway and background-worker Dockerfiles, `helm lint`, and `helm template` rendering.
+- **Kind Integration** (`.github/workflows/kind-integration.yml`): On PRs/pushes that touch the chart, kind assets, scripts, gateway, or background worker (manual trigger also available). Creates a kind cluster (`duihua-ci`), runs `scripts/ci-kind-integration.sh` (KEDA, gateway and background-worker image builds, `ghcr.io/beranekio/mock-vllm:latest` upstream, Helm deploy with `values-kind-ci.yaml`, `scripts/smoke-test-kind.sh` including background completion when the worker Deployment is present).
 
 CI uses the published [mock-vllm](https://github.com/beranekio/mock-vllm) image (`ghcr.io/beranekio/mock-vllm:latest`) instead of the bundled vLLM inference stack. Local kind workflows still use `values-kind.yaml` with real inference via `scripts/kind-local-up.sh`.

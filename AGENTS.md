@@ -6,7 +6,7 @@ Guidance for human and AI contributors working in this repository.
 - This repo provides a Kubernetes-first, OpenAI API-compatible serving stack.
 - Main components:
   - `services/gateway` (Rust/Axum API gateway)
-  - `services/background-worker` (lean Rust worker for background Responses API Jobs)
+  - `services/background-worker` (Valkey stream consumer for background Responses API requests)
   - `services/common` (shared Rust library for gateway and background worker)
   - `charts/duihua-ai-services` (Helm chart)
   - `scripts/` (local kind + deployment helpers)
@@ -22,10 +22,12 @@ Guidance for human and AI contributors working in this repository.
 ## Pre-push kind integration test
 
 **Required before push** when a commit changes either:
-- `services/gateway/` (gateway source, Dockerfile, or gateway-facing behavior), or
-- `charts/duihua-ai-services/` (chart templates, values, or chart defaults).
+- `services/gateway/` (gateway source, Dockerfile, or gateway-facing behavior),
+- `services/background-worker/` (worker source, Dockerfile, or queue consumer behavior),
+- `charts/duihua-ai-services/` (chart templates, values, or chart defaults), or
+- `scripts/` when deploy or smoke-test behavior changes.
 
-Run the end-to-end kind smoke test so chart and gateway changes are validated against a real cluster, not only static checks.
+Run the end-to-end kind smoke test so chart, gateway, and background-worker changes are validated against a real cluster, not only static checks.
 
 ### When the environment supports kind
 
@@ -44,14 +46,14 @@ Do not re-run `scripts/kind-local-up.sh` to pick up gateway or chart edits on an
 **Incremental refresh** (cluster already running; required after gateway or chart edits):
 
 ```bash
-scripts/build-and-load-images.sh   # after gateway image changes (restarts gateway if deployed)
-scripts/deploy-kind.sh             # after chart or values changes (restarts gateway after Helm upgrade)
+scripts/build-and-load-images.sh   # after gateway or worker image changes (restarts Deployments if deployed)
+scripts/deploy-kind.sh             # after chart or values changes (restarts Deployments after Helm upgrade)
 scripts/smoke-test-kind.sh
 ```
 
-`scripts/build-and-load-images.sh` and `scripts/deploy-kind.sh` restart the gateway deployment by default so pods load a rebuilt `:local` image even when the Helm pod template is unchanged. Set `GATEWAY_ROLLOUT_RESTART=false` to skip restarts, or use a unique `GATEWAY_IMAGE_TAG` instead of `:local`.
+`scripts/build-and-load-images.sh` and `scripts/deploy-kind.sh` restart the gateway and background-worker Deployments by default so pods load rebuilt `:local` images even when the Helm pod template is unchanged. Set `GATEWAY_ROLLOUT_RESTART=false` or `BACKGROUND_WORKER_ROLLOUT_RESTART=false` to skip individual restarts, or use unique image tags instead of `:local`.
 
-`scripts/smoke-test-kind.sh` exercises sync and background Responses API flows, cancel/delete behavior, in-flight continuation rejection, and background Job resource requests against the deployed chart. See `README.md` (Local kind workflow scripts) for tunables such as `GATEWAY_BASE_URL`, `DEFAULT_MODEL`, `RELEASE_NAME`, and `NAMESPACE`.
+`scripts/smoke-test-kind.sh` exercises sync and background Responses API flows (including completion polling when the worker Deployment is present), cancel/delete behavior, in-flight continuation rejection, and background-worker Deployment resource requests. See `README.md` (Local kind workflow scripts) for tunables such as `GATEWAY_BASE_URL`, `DEFAULT_MODEL`, `RELEASE_NAME`, and `NAMESPACE`.
 
 ### When kind is not available
 
@@ -59,7 +61,7 @@ If Docker, kind, cluster access, or sufficient resources are unavailable, still 
 
 ## Validation commands
 
-Run checks that match the files you changed. Gateway and chart edits need both unit/static checks **and** the kind smoke test above when possible.
+Run checks that match the files you changed. Gateway, background-worker, and chart edits need both unit/static checks **and** the kind smoke test above when possible.
 
 ### Rust workspace (run from `services/`)
 
@@ -81,7 +83,7 @@ Individual crates may be targeted with `-p duihua-gateway`, `-p duihua-backgroun
 ### Scripts
 - `bash -n scripts/*.sh` when editing shell helpers
 
-### Kind integration (gateway or chart changes; see [Pre-push kind integration test](#pre-push-kind-integration-test))
+### Kind integration (gateway, background-worker, or chart changes; see [Pre-push kind integration test](#pre-push-kind-integration-test))
 - `scripts/kind-local-up.sh` for first-time bootstrap only
 - On an existing cluster: `scripts/build-and-load-images.sh` and/or `scripts/deploy-kind.sh` (see [incremental refresh](#when-the-environment-supports-kind))
 - `scripts/smoke-test-kind.sh`

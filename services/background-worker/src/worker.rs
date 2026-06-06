@@ -1,9 +1,7 @@
 use std::{env, time::Duration};
 
 use anyhow::{Context, Result};
-use duihua_common::{
-    response_store_from_env, stored_response_status, ResponseStore, StoredResponse,
-};
+use duihua_common::{stored_response_status, ResponseStore, StoredResponse};
 use reqwest::Client as HttpClient;
 use serde_json::{json, Value};
 
@@ -14,13 +12,10 @@ struct ClaimedWork {
     upstream_authorization: Option<String>,
 }
 
-pub async fn run() -> Result<()> {
-    let response_id =
-        env::var("BACKGROUND_RESPONSE_ID").context("BACKGROUND_RESPONSE_ID is required")?;
+pub async fn process_response(response_store: &ResponseStore, response_id: &str) -> Result<()> {
     let upstream_api_key = env::var("UPSTREAM_API_KEY").ok();
-    let response_store = response_store_from_env().await?;
 
-    let Some(work) = claim_for_processing(&response_store, &response_id).await? else {
+    let Some(work) = claim_for_processing(response_store, response_id).await? else {
         return Ok(());
     };
 
@@ -40,8 +35,8 @@ pub async fn run() -> Result<()> {
                 Ok(body) => body,
                 Err(e) => {
                     mark_failed(
-                        &response_store,
-                        &response_id,
+                        response_store,
+                        response_id,
                         &format!("failed to read upstream background response body: {e}"),
                     )
                     .await?;
@@ -50,28 +45,28 @@ pub async fn run() -> Result<()> {
             };
             if !status.is_success() {
                 let message = String::from_utf8_lossy(&body);
-                mark_failed(&response_store, &response_id, &message).await?;
+                mark_failed(response_store, response_id, &message).await?;
                 return Ok(());
             }
 
             let Ok(mut response) = serde_json::from_slice::<Value>(&body) else {
                 mark_failed(
-                    &response_store,
-                    &response_id,
+                    response_store,
+                    response_id,
                     "upstream returned invalid JSON",
                 )
                 .await?;
                 return Ok(());
             };
-            response["id"] = Value::String(response_id.clone());
+            response["id"] = Value::String(response_id.to_string());
             response["background"] = Value::Bool(true);
             if response.get("status").is_none() {
                 response["status"] = Value::String("completed".to_string());
             }
 
             store_completion(
-                &response_store,
-                &response_id,
+                response_store,
+                response_id,
                 StoredResponse {
                     upstream: work.upstream,
                     response,
@@ -84,7 +79,7 @@ pub async fn run() -> Result<()> {
             .await?;
         }
         Err(e) => {
-            mark_failed(&response_store, &response_id, &e.to_string()).await?;
+            mark_failed(response_store, response_id, &e.to_string()).await?;
         }
     }
 

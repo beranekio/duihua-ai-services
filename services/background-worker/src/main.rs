@@ -1,3 +1,4 @@
+mod queue;
 mod worker;
 
 use anyhow::Result;
@@ -13,5 +14,5 @@ fn init_rustls_provider() {
 #[tokio::main]
 async fn main() -> Result<()> {
     init_rustls_provider();
-    worker::run().await
+    queue::run().await
 }

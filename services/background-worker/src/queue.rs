@@ -129,56 +129,60 @@ pub async fn run() -> Result<()> {
 
         if !shutdown_triggered(&shutdown_rx) {
             if let Some(permit) =
-                try_acquire_job_permit(job_concurrency.clone(), &shutdown_rx).await
+                acquire_job_permit(job_concurrency.clone(), &shutdown_rx, true).await
             {
-                let autoclaim_result: Result<StreamAutoClaimReply, RedisError> = connection
-                    .xautoclaim_options(
-                        &config.stream_key,
-                        &config.consumer_group,
-                        &config.consumer_name,
-                        config.autoclaim_min_idle_ms,
-                        &autoclaim_cursor,
-                        StreamAutoClaimOptions::default().count(1),
-                    )
-                    .await;
-                match autoclaim_result {
-                    Ok(autoclaim) => {
-                        autoclaim_cursor = autoclaim.next_stream_id;
-                        process_stream_entries(
-                            &mut connection,
-                            &config,
-                            &response_store,
-                            &autoclaim.claimed,
-                            EntrySource::Autoclaimed,
-                            pending_retries.clone(),
-                            job_concurrency.clone(),
-                            &mut join_set,
-                            &shutdown_rx,
-                            Some(permit),
+                if shutdown_triggered(&shutdown_rx) {
+                    drop(permit);
+                } else {
+                    let autoclaim_result: Result<StreamAutoClaimReply, RedisError> = connection
+                        .xautoclaim_options(
+                            &config.stream_key,
+                            &config.consumer_group,
+                            &config.consumer_name,
+                            config.autoclaim_min_idle_ms,
+                            &autoclaim_cursor,
+                            StreamAutoClaimOptions::default().count(1),
                         )
                         .await;
-                    }
-                    Err(err) if is_nogroup(&err) => {
-                        drop(permit);
-                        eprintln!(
-                            "background queue consumer group missing during autoclaim; recreating"
-                        );
-                        if let Err(ensure_err) =
-                            ensure_consumer_group(&mut connection, &config).await
-                        {
+                    match autoclaim_result {
+                        Ok(autoclaim) => {
+                            autoclaim_cursor = autoclaim.next_stream_id;
+                            process_stream_entries(
+                                &mut connection,
+                                &config,
+                                &response_store,
+                                &autoclaim.claimed,
+                                EntrySource::Autoclaimed,
+                                pending_retries.clone(),
+                                job_concurrency.clone(),
+                                &mut join_set,
+                                &shutdown_rx,
+                                Some(permit),
+                            )
+                            .await;
+                        }
+                        Err(err) if is_nogroup(&err) => {
+                            drop(permit);
                             eprintln!(
-                                "failed to recreate background queue consumer group: {ensure_err:?}"
+                                "background queue consumer group missing during autoclaim; recreating"
                             );
+                            if let Err(ensure_err) =
+                                ensure_consumer_group(&mut connection, &config).await
+                            {
+                                eprintln!(
+                                    "failed to recreate background queue consumer group: {ensure_err:?}"
+                                );
+                                sleep_on_redis_error().await;
+                            }
+                        }
+                        Err(err) if is_blocking_command_timeout(&err) => {
+                            drop(permit);
+                        }
+                        Err(err) => {
+                            drop(permit);
+                            eprintln!("failed to auto-claim background queue messages: {err:?}");
                             sleep_on_redis_error().await;
                         }
-                    }
-                    Err(err) if is_blocking_command_timeout(&err) => {
-                        drop(permit);
-                    }
-                    Err(err) => {
-                        drop(permit);
-                        eprintln!("failed to auto-claim background queue messages: {err:?}");
-                        sleep_on_redis_error().await;
                     }
                 }
             }
@@ -188,13 +192,14 @@ pub async fn run() -> Result<()> {
             break;
         }
 
-        let Some(permit) = try_acquire_job_permit(job_concurrency.clone(), &shutdown_rx).await
+        let Some(permit) = acquire_job_permit(job_concurrency.clone(), &shutdown_rx, true).await
         else {
-            if shutdown_triggered(&shutdown_rx) {
-                break;
-            }
-            continue;
+            break;
         };
+        if shutdown_triggered(&shutdown_rx) {
+            drop(permit);
+            break;
+        }
         match read_new_stream_entries(&mut connection, &config, &shutdown_rx).await {
             ReadNewOutcome::Shutdown => {
                 drop(permit);
@@ -317,20 +322,6 @@ async fn read_new_stream_entries(
             eprintln!("failed to read new background queue messages: {err:?}");
             ReadNewOutcome::RedisError
         }
-    }
-}
-
-async fn try_acquire_job_permit(
-    job_concurrency: Arc<Semaphore>,
-    shutdown_rx: &watch::Receiver<bool>,
-) -> Option<tokio::sync::OwnedSemaphorePermit> {
-    if shutdown_triggered(shutdown_rx) {
-        return None;
-    }
-    match job_concurrency.try_acquire_owned() {
-        Ok(_permit) if shutdown_triggered(shutdown_rx) => None,
-        Ok(permit) => Some(permit),
-        Err(_) => None,
     }
 }
 
@@ -742,11 +733,12 @@ async fn process_stream_entries(
     for message in messages {
         let response_id = message.response_id.clone();
         let stream_id = message.stream_id.clone();
-        let Some(permit) =
-            reserved_permit
-                .take()
-                .or(try_acquire_job_permit(job_concurrency.clone(), shutdown_rx).await)
-        else {
+        let Some(permit) = reserved_permit.take().or(acquire_job_permit(
+            job_concurrency.clone(),
+            shutdown_rx,
+            true,
+        )
+        .await) else {
             break;
         };
 

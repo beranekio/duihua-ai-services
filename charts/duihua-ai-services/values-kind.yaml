@@ -91,6 +91,9 @@ inference:
       scaledObjectAnnotations: {}
       annotations: {}
 
+serviceAccount:
+  create: true
+
 valkey:
   enabled: true
   image:

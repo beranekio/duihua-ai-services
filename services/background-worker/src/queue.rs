@@ -93,38 +93,38 @@ pub async fn run() -> Result<()> {
         recommended_termination_grace_period_seconds()
     );
     let job_concurrency = Arc::new(Semaphore::new(config.max_concurrent_jobs));
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    spawn_shutdown_listener(shutdown_tx);
     drain_pending_at_startup(
         &mut connection,
         &config,
         &response_store,
         job_concurrency.clone(),
+        &shutdown_rx,
     )
     .await;
 
     let mut autoclaim_cursor = "0-0".to_string();
     let pending_retries = Arc::new(Mutex::new(PendingRetryScheduler::new()));
-    let join_set = Arc::new(Mutex::new(JoinSet::new()));
-    let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
-    spawn_shutdown_listener(shutdown_tx);
+    let mut join_set = JoinSet::new();
 
     loop {
         if shutdown_triggered(&shutdown_rx) {
             break;
         }
 
-        reap_completed_jobs(join_set.clone()).await;
+        reap_completed_jobs(&mut join_set).await;
 
-        process_due_pending_retries(
-            &mut connection,
-            &config,
-            &response_store,
-            pending_retries.clone(),
-            job_concurrency.clone(),
-            &shutdown_rx,
-        )
-        .await;
-        if shutdown_triggered(&shutdown_rx) {
-            break;
+        if !shutdown_triggered(&shutdown_rx) {
+            process_due_pending_retries(
+                &mut connection,
+                &config,
+                &response_store,
+                pending_retries.clone(),
+                job_concurrency.clone(),
+                &shutdown_rx,
+            )
+            .await;
         }
 
         if !shutdown_triggered(&shutdown_rx) {
@@ -149,7 +149,7 @@ pub async fn run() -> Result<()> {
                         EntrySource::Autoclaimed,
                         pending_retries.clone(),
                         job_concurrency.clone(),
-                        join_set.clone(),
+                        &mut join_set,
                         &shutdown_rx,
                     )
                     .await;
@@ -173,7 +173,11 @@ pub async fn run() -> Result<()> {
             }
         }
 
-        match read_new_stream_entries(&mut connection, &config, &mut shutdown_rx).await {
+        if shutdown_triggered(&shutdown_rx) {
+            break;
+        }
+
+        match read_new_stream_entries(&mut connection, &config, &shutdown_rx).await {
             ReadNewOutcome::Shutdown => break,
             ReadNewOutcome::Idle => {}
             ReadNewOutcome::Entries(entries) => {
@@ -185,7 +189,7 @@ pub async fn run() -> Result<()> {
                     EntrySource::Live,
                     pending_retries.clone(),
                     job_concurrency.clone(),
-                    join_set.clone(),
+                    &mut join_set,
                     &shutdown_rx,
                 )
                 .await;
@@ -203,7 +207,7 @@ pub async fn run() -> Result<()> {
 
     eprintln!("background worker draining in-flight jobs before exit");
     job_concurrency.close();
-    drain_in_flight_jobs(join_set).await;
+    drain_in_flight_jobs(&mut join_set).await;
     Ok(())
 }
 
@@ -250,7 +254,7 @@ async fn wait_for_shutdown_signal() {
 async fn read_new_stream_entries(
     connection: &mut ConnectionManager,
     config: &QueueConfig,
-    shutdown_rx: &mut watch::Receiver<bool>,
+    shutdown_rx: &watch::Receiver<bool>,
 ) -> ReadNewOutcome {
     if shutdown_triggered(shutdown_rx) {
         return ReadNewOutcome::Shutdown;
@@ -263,46 +267,67 @@ async fn read_new_stream_entries(
     let stream_keys = [&config.stream_key];
     let stream_ids = [">"];
 
-    tokio::select! {
-        biased;
-        changed = shutdown_rx.changed() => {
-            match changed {
-                Ok(()) if shutdown_triggered(shutdown_rx) => {
-                    let _ = shutdown_rx.borrow_and_update();
-                    ReadNewOutcome::Shutdown
-                }
-                Ok(()) => ReadNewOutcome::Idle,
-                Err(_) => ReadNewOutcome::Shutdown,
-            }
-        }
-        read_result = connection.xread_options::<_, _, Option<redis::streams::StreamReadReply>>(
+    // Let blocking reads finish so claimed entries are not abandoned in the PEL.
+    match connection
+        .xread_options::<_, _, Option<redis::streams::StreamReadReply>>(
             &stream_keys,
             &stream_ids,
             &new_opts,
-        ) => {
-            match read_result {
-                Ok(Some(reply)) => {
-                    let entries: Vec<StreamId> = reply
-                        .keys
-                        .iter()
-                        .flat_map(|key| key.ids.iter().cloned())
-                        .collect();
-                    ReadNewOutcome::Entries(entries)
-                }
-                Ok(None) => ReadNewOutcome::Idle,
-                Err(err) if is_blocking_command_timeout(&err) => ReadNewOutcome::Idle,
-                Err(err) if is_nogroup(&err) => ReadNewOutcome::NoGroup,
-                Err(err) => {
-                    eprintln!("failed to read new background queue messages: {err:?}");
-                    ReadNewOutcome::RedisError
-                }
-            }
+        )
+        .await
+    {
+        Ok(Some(reply)) => {
+            let entries: Vec<StreamId> = reply
+                .keys
+                .iter()
+                .flat_map(|key| key.ids.iter().cloned())
+                .collect();
+            ReadNewOutcome::Entries(entries)
+        }
+        Ok(None) => ReadNewOutcome::Idle,
+        Err(err) if is_blocking_command_timeout(&err) => ReadNewOutcome::Idle,
+        Err(err) if is_nogroup(&err) => ReadNewOutcome::NoGroup,
+        Err(err) => {
+            eprintln!("failed to read new background queue messages: {err:?}");
+            ReadNewOutcome::RedisError
         }
     }
 }
 
-async fn reap_completed_jobs(join_set: Arc<Mutex<JoinSet<()>>>) {
-    let mut join_set = join_set.lock().await;
+async fn acquire_job_permit(
+    job_concurrency: Arc<Semaphore>,
+    shutdown_rx: &watch::Receiver<bool>,
+    stop_on_shutdown: bool,
+) -> Option<tokio::sync::OwnedSemaphorePermit> {
+    loop {
+        if stop_on_shutdown && shutdown_triggered(shutdown_rx) {
+            return None;
+        }
+
+        if stop_on_shutdown {
+            let mut shutdown_listener = shutdown_rx.clone();
+            tokio::select! {
+                biased;
+                changed = shutdown_listener.changed() => {
+                    if changed.is_err() || shutdown_triggered(shutdown_rx) {
+                        return None;
+                    }
+                }
+                permit = job_concurrency.clone().acquire_owned() => {
+                    return match permit {
+                        Ok(_permit) if shutdown_triggered(shutdown_rx) => None,
+                        Ok(permit) => Some(permit),
+                        Err(_) => None,
+                    };
+                }
+            }
+        } else {
+            return job_concurrency.acquire_owned().await.ok();
+        }
+    }
+}
+
+async fn reap_completed_jobs(join_set: &mut JoinSet<()>) {
     while let Some(result) = join_set.try_join_next() {
         if let Err(err) = result {
             eprintln!("background queue job task failed: {err:?}");
@@ -310,12 +335,7 @@ async fn reap_completed_jobs(join_set: Arc<Mutex<JoinSet<()>>>) {
     }
 }
 
-async fn drain_in_flight_jobs(join_set: Arc<Mutex<JoinSet<()>>>) {
-    let mut join_set = join_set.lock().await;
-    drain_in_flight_jobs_mut(&mut join_set).await;
-}
-
-async fn drain_in_flight_jobs_mut(join_set: &mut JoinSet<()>) {
+async fn drain_in_flight_jobs(join_set: &mut JoinSet<()>) {
     while let Some(result) = join_set.join_next().await {
         if let Err(err) = result {
             eprintln!("background queue job task failed during shutdown drain: {err:?}");
@@ -323,10 +343,12 @@ async fn drain_in_flight_jobs_mut(join_set: &mut JoinSet<()>) {
     }
 }
 
+pub fn recommended_termination_grace_period_seconds_for_upstream(upstream_secs: usize) -> u64 {
+    upstream_secs.saturating_add(60).max(30) as u64
+}
+
 pub fn recommended_termination_grace_period_seconds() -> u64 {
-    upstream_timeout_seconds_from_env()
-        .saturating_add(60)
-        .max(30) as u64
+    recommended_termination_grace_period_seconds_for_upstream(upstream_timeout_seconds_from_env())
 }
 
 #[derive(Debug)]
@@ -418,12 +440,9 @@ async fn process_due_pending_retries(
             }
         };
 
-        let permit = match job_concurrency.clone().acquire_owned().await {
-            Ok(permit) => permit,
-            Err(err) => {
-                eprintln!("background queue concurrency limit closed: {err:?}");
-                break;
-            }
+        let Some(permit) = acquire_job_permit(job_concurrency.clone(), shutdown_rx, true).await
+        else {
+            break;
         };
         match handle_message(
             connection,
@@ -533,8 +552,13 @@ async fn drain_pending_at_startup(
     config: &QueueConfig,
     response_store: &duihua_common::ResponseStore,
     job_concurrency: Arc<Semaphore>,
+    shutdown_rx: &watch::Receiver<bool>,
 ) {
     loop {
+        if shutdown_triggered(shutdown_rx) {
+            break;
+        }
+
         let pending: StreamPendingCountReply = match connection
             .xpending_consumer_count(
                 &config.stream_key,
@@ -569,6 +593,11 @@ async fn drain_pending_at_startup(
 
         let mut stopped_on_error = false;
         for pending_id in pending.ids {
+            if shutdown_triggered(shutdown_rx) {
+                stopped_on_error = true;
+                break;
+            }
+
             let idle_ms = Some(pending_id.last_delivered_ms as u64);
             let stream_id = pending_id.id.clone();
             let message = match load_queue_message(connection, config, &stream_id, idle_ms).await {
@@ -591,13 +620,10 @@ async fn drain_pending_at_startup(
                 }
             };
 
-            let permit = match job_concurrency.clone().acquire_owned().await {
-                Ok(permit) => permit,
-                Err(err) => {
-                    eprintln!("background queue concurrency limit closed: {err:?}");
-                    stopped_on_error = true;
-                    break;
-                }
+            let Some(permit) = acquire_job_permit(job_concurrency.clone(), shutdown_rx, true).await
+            else {
+                stopped_on_error = true;
+                break;
             };
             match handle_message(
                 connection,
@@ -634,13 +660,9 @@ async fn process_stream_entries(
     entry_source: EntrySource,
     pending_retries: Arc<Mutex<PendingRetryScheduler>>,
     job_concurrency: Arc<Semaphore>,
-    join_set: Arc<Mutex<JoinSet<()>>>,
+    join_set: &mut JoinSet<()>,
     shutdown_rx: &watch::Receiver<bool>,
 ) {
-    if shutdown_triggered(shutdown_rx) {
-        return;
-    }
-
     let (messages, invalid_ids) = split_stream_entries(entries);
 
     for stream_id in invalid_ids {
@@ -651,23 +673,36 @@ async fn process_stream_entries(
     }
 
     for message in messages {
-        if shutdown_triggered(shutdown_rx) {
-            break;
-        }
         let response_id = message.response_id.clone();
         let stream_id = message.stream_id.clone();
-        let permit = match job_concurrency.clone().acquire_owned().await {
-            Ok(permit) => permit,
-            Err(err) => {
-                eprintln!("background queue concurrency limit closed: {err:?}");
-                break;
-            }
+        let Some(permit) = acquire_job_permit(job_concurrency.clone(), shutdown_rx, false).await
+        else {
+            break;
         };
+
+        if shutdown_triggered(shutdown_rx) {
+            match handle_message(connection, config, response_store, message, entry_source).await {
+                Ok(()) => {}
+                Err(err) if err.downcast_ref::<RetryableMessageError>().is_some() => {
+                    pending_retries.lock().await.schedule(
+                        stream_id,
+                        response_id,
+                        pending_retry_backoff_from_env(),
+                    );
+                }
+                Err(err) => {
+                    eprintln!("failed to process background queue message {response_id}: {err:?}");
+                }
+            }
+            drop(permit);
+            continue;
+        }
+
         let mut worker_connection = connection.clone();
         let config = config.clone();
         let response_store = response_store.clone();
         let pending_retries = pending_retries.clone();
-        join_set.lock().await.spawn(async move {
+        join_set.spawn(async move {
             let _permit = permit;
             match handle_message(
                 &mut worker_connection,
@@ -1010,9 +1045,10 @@ mod tests {
 
     #[test]
     fn recommended_grace_period_exceeds_upstream_timeout() {
-        env::set_var("BACKGROUND_UPSTREAM_TIMEOUT_SECONDS", "600");
-        assert_eq!(recommended_termination_grace_period_seconds(), 660);
-        env::remove_var("BACKGROUND_UPSTREAM_TIMEOUT_SECONDS");
+        assert_eq!(
+            recommended_termination_grace_period_seconds_for_upstream(600),
+            660
+        );
     }
 
     #[tokio::test]
@@ -1021,7 +1057,7 @@ mod tests {
         join_set.spawn(async {
             tokio::time::sleep(Duration::from_millis(20)).await;
         });
-        drain_in_flight_jobs_mut(&mut join_set).await;
+        drain_in_flight_jobs(&mut join_set).await;
         assert!(join_set.is_empty());
     }
 

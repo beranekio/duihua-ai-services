@@ -22,16 +22,19 @@ gateway:
     upstreamBaseUrl: http://127.0.0.1:9/v1
   responsesApiStore:
     enabled: true
-    backgroundJobs:
-      enabled: true
-      streamKey: duihua:responses:background
-      staleSeconds: 3600
 
 backgroundWorker:
+  enabled: true
   image:
     repository: duihua-background-worker
     tag: kind
     pullPolicy: IfNotPresent
+  streamKey: duihua:responses:background
+  staleSeconds: 3600
+  # Faster pending retries for local smoke tests (live deliveries retry once before processing).
+  pendingRetrySeconds: 5
+  # Keep below the redis-rs client response timeout so blocking reads do not error-loop.
+  blockMs: 1000
 
 inference:
   enabled: true
@@ -77,9 +80,6 @@ inference:
         # HTTP add-on. This annotation lets you override the default.
       scaledObjectAnnotations: {}
       annotations: {}
-
-serviceAccount:
-  create: true
 
 valkey:
   enabled: true

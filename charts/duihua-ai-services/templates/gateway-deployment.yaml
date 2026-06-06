@@ -12,11 +12,6 @@ spec:
       labels:
         app: {{ include "duihua.fullname" . }}-gateway
     spec:
-      {{- if .Values.serviceAccount.create }}
-      serviceAccountName: {{ include "duihua.serviceAccountName" . }}
-      {{- else if .Values.serviceAccount.name }}
-      serviceAccountName: {{ .Values.serviceAccount.name | quote }}
-      {{- end }}
       containers:
         - name: gateway
           image: "{{ .Values.gateway.image.repository }}:{{ .Values.gateway.image.tag }}"
@@ -41,11 +36,7 @@ spec:
             - name: RESPONSES_API_STORE_ENABLED
               value: {{ include "duihua.responsesApiStore.enabled" . | quote }}
             - name: RESPONSE_ID_STORE_URL
-              {{ if .Values.valkey.enabled }}
-              value: "redis://{{ include "duihua.fullname" . }}-valkey:{{ .Values.valkey.service.port }}"
-              {{ else }}
-              value: {{ .Values.gateway.env.responseIdStoreUrl | quote }}
-              {{ end }}
+              value: {{ include "duihua.responseIdStoreUrl" . | quote }}
             - name: RESPONSE_ID_STORE_KEY_PREFIX
               value: {{ .Values.gateway.env.responseIdStoreKeyPrefix | quote }}
             - name: RESPONSE_ID_STORE_TTL_SECONDS
@@ -54,9 +45,9 @@ spec:
             - name: RESPONSES_BACKGROUND_ENABLED
               value: "true"
             - name: BACKGROUND_QUEUE_STREAM_KEY
-              value: {{ .Values.gateway.responsesApiStore.backgroundJobs.streamKey | quote }}
+              value: {{ .Values.backgroundWorker.streamKey | quote }}
             - name: BACKGROUND_RESPONSE_STALE_SECONDS
-              value: {{ .Values.gateway.responsesApiStore.backgroundJobs.staleSeconds | quote }}
+              value: {{ .Values.backgroundWorker.staleSeconds | quote }}
             {{- end }}
             - name: MODEL_UPSTREAMS
               {{ if .Values.inference.enabled }}

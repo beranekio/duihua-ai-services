@@ -1,0 +1,37 @@
+{{- if eq (include "duihua.background.enabled" .) "true" }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "duihua.fullname" . }}-background-worker
+spec:
+  replicas: {{ .Values.backgroundWorker.replicaCount }}
+  selector:
+    matchLabels:
+      app: {{ include "duihua.fullname" . }}-background-worker
+  template:
+    metadata:
+      labels:
+        app: {{ include "duihua.fullname" . }}-background-worker
+    spec:
+      containers:
+        - name: background-worker
+          image: "{{ .Values.backgroundWorker.image.repository }}:{{ .Values.backgroundWorker.image.tag }}"
+          imagePullPolicy: {{ .Values.backgroundWorker.image.pullPolicy }}
+          env:
+            - name: RESPONSE_ID_STORE_URL
+              value: {{ include "duihua.responseIdStoreUrl" . | quote }}
+            - name: BACKGROUND_QUEUE_STREAM_KEY
+              value: {{ .Values.backgroundWorker.streamKey | quote }}
+            - name: BACKGROUND_QUEUE_CONSUMER_GROUP
+              value: {{ .Values.backgroundWorker.consumerGroup | quote }}
+            - name: BACKGROUND_QUEUE_CONSUMER_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: BACKGROUND_QUEUE_BLOCK_MS
+              value: {{ .Values.backgroundWorker.blockMs | quote }}
+            - name: BACKGROUND_QUEUE_PENDING_RETRY_SECONDS
+              value: {{ .Values.backgroundWorker.pendingRetrySeconds | quote }}
+          resources:
+{{ toYaml .Values.backgroundWorker.resources | indent 12 }}
+{{- end }}

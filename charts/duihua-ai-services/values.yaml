@@ -25,19 +25,29 @@ gateway:
     # from the gateway. This does not enable vLLM's in-memory response store, so
     # inference deployments may use multiple replicas and scale to zero.
     enabled: false
-    backgroundJobs:
-      # Enqueue background=true Responses API requests on a Valkey stream for the
-      # background-worker Deployment to process (#44/#45).
-      enabled: true
-      streamKey: duihua:responses:background
-      staleSeconds: 3600
 
 backgroundWorker:
-  # Image for the background-worker Deployment that consumes the Valkey stream (#45).
+  # Consume background=true Responses API jobs from a Valkey stream when the
+  # gateway response store is enabled.
+  enabled: true
+  replicaCount: 1
   image:
     repository: ghcr.io/example/duihua-background-worker
     tag: "0.1.0"
     pullPolicy: IfNotPresent
+  streamKey: duihua:responses:background
+  # Used by the gateway for stale-response reconciliation on GET /v1/responses/{id}.
+  staleSeconds: 3600
+  consumerGroup: duihua-background
+  blockMs: 5000
+  pendingRetrySeconds: 30
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
 
 inference:
   enabled: true
@@ -101,11 +111,6 @@ valkey:
     limits:
       cpu: 250m
       memory: 256Mi
-
-serviceAccount:
-  # Created only when gateway background jobs are enabled.
-  create: false
-  name: ""
 
 ingress:
   enabled: false

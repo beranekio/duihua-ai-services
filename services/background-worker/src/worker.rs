@@ -78,6 +78,7 @@ pub async fn run() -> Result<()> {
                     input: work.input,
                     pending_upstream_request: None,
                     upstream_authorization: None,
+                    enqueued_at: None,
                 },
             )
             .await?;
@@ -221,6 +222,7 @@ mod tests {
             input: vec![],
             pending_upstream_request: None,
             upstream_authorization: None,
+            enqueued_at: None,
         };
         assert!(!should_persist(&cancelled));
 
@@ -230,6 +232,7 @@ mod tests {
             input: vec![],
             pending_upstream_request: None,
             upstream_authorization: None,
+            enqueued_at: None,
         };
         assert!(!should_persist(&deleted));
     }
@@ -242,6 +245,7 @@ mod tests {
             input: vec![],
             pending_upstream_request: Some(json!({"input": "hi"})),
             upstream_authorization: None,
+            enqueued_at: None,
         };
         assert!(is_claimable(&queued));
 
@@ -251,6 +255,7 @@ mod tests {
             input: vec![],
             pending_upstream_request: None,
             upstream_authorization: None,
+            enqueued_at: None,
         };
         assert!(!is_claimable(&in_progress));
     }

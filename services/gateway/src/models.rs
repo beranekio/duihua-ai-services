@@ -127,6 +127,7 @@ mod tests {
             input: vec![json!({"role": "user", "content": "prior question"})],
             pending_upstream_request: None,
             upstream_authorization: None,
+            enqueued_at: None,
         };
 
         assert_eq!(

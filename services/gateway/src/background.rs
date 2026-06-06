@@ -286,6 +286,7 @@ pub async fn enqueue_background_response(
         input,
         pending_upstream_request: Some(upstream_request),
         upstream_authorization,
+        enqueued_at: None,
     };
     if let Err(e) = response_store.store(&response_id, &stored).await {
         error!("failed to store queued background response {response_id}: {e}");

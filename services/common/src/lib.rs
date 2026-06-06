@@ -14,6 +14,8 @@ pub struct StoredResponse {
     pub pending_upstream_request: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub upstream_authorization: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enqueued_at: Option<i64>,
 }
 
 #[derive(Clone)]
@@ -226,6 +228,7 @@ mod tests {
             input: vec![],
             pending_upstream_request: Some(json!({"input": "hi"})),
             upstream_authorization: None,
+            enqueued_at: None,
         };
         assert!(is_in_flight_background(&queued));
 
@@ -235,6 +238,7 @@ mod tests {
             input: vec![],
             pending_upstream_request: None,
             upstream_authorization: None,
+            enqueued_at: None,
         };
         assert!(!is_in_flight_background(&completed));
     }
@@ -255,6 +259,46 @@ mod tests {
             response_id_from_value(&stream_event).as_deref(),
             Some("resp_456")
         );
+    }
+
+    #[test]
+    fn deserializes_stored_response_without_enqueued_at() {
+        let legacy = r#"{
+            "upstream": "http://model",
+            "response": {"status": "queued", "background": true},
+            "input": []
+        }"#;
+        let stored: StoredResponse = serde_json::from_str(legacy).expect("legacy record");
+        assert_eq!(stored.enqueued_at, None);
+    }
+
+    #[test]
+    fn omits_enqueued_at_when_none_on_serialize() {
+        let stored = StoredResponse {
+            upstream: "http://model".to_string(),
+            response: json!({"status": "queued", "background": true}),
+            input: vec![],
+            pending_upstream_request: None,
+            upstream_authorization: None,
+            enqueued_at: None,
+        };
+        let serialized = serde_json::to_value(&stored).expect("serialize");
+        assert!(serialized.get("enqueued_at").is_none());
+    }
+
+    #[test]
+    fn round_trips_enqueued_at_when_set() {
+        let stored = StoredResponse {
+            upstream: "http://model".to_string(),
+            response: json!({"status": "queued", "background": true}),
+            input: vec![],
+            pending_upstream_request: None,
+            upstream_authorization: None,
+            enqueued_at: Some(1_746_500_000),
+        };
+        let serialized = serde_json::to_string(&stored).expect("serialize");
+        let loaded: StoredResponse = serde_json::from_str(&serialized).expect("deserialize");
+        assert_eq!(loaded.enqueued_at, Some(1_746_500_000));
     }
 
     #[test]

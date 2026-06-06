@@ -81,6 +81,7 @@ pub async fn store_response(
         input,
         pending_upstream_request: None,
         upstream_authorization: None,
+        enqueued_at: None,
     };
     if let Err(e) = response_store.store(&response_id, &stored).await {
         error!("failed to store response {response_id}: {e}");

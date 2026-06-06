@@ -42,9 +42,7 @@ impl QueueConfig {
             .unwrap_or_else(|_| "duihua:responses:background".to_string());
         let consumer_group = env::var("BACKGROUND_QUEUE_CONSUMER_GROUP")
             .unwrap_or_else(|_| "duihua-background".to_string());
-        let consumer_name = env::var("BACKGROUND_QUEUE_CONSUMER_NAME")
-            .or_else(|_| env::var("HOSTNAME"))
-            .unwrap_or_else(|_| "duihua-background-worker".to_string());
+        let consumer_name = consumer_name_from_env();
         let block_ms = env::var("BACKGROUND_QUEUE_BLOCK_MS")
             .ok()
             .and_then(|value| value.parse().ok())
@@ -232,16 +230,23 @@ async fn process_due_pending_retries(
         let idle_ms = pending_idle_ms(connection, config, &stream_id)
             .await
             .unwrap_or(None);
-        let Some(message) = load_queue_message(connection, config, &stream_id, idle_ms).await
-        else {
-            eprintln!("pending retry entry {stream_id} missing from stream; acknowledging");
-            if acknowledge_message(connection, config, &stream_id)
-                .await
-                .is_ok()
-            {
-                pending_retries.remove(&stream_id);
+        let message = match load_queue_message(connection, config, &stream_id, idle_ms).await {
+            Ok(Some(message)) => message,
+            Ok(None) => {
+                eprintln!("pending retry entry {stream_id} missing or malformed; acknowledging");
+                if acknowledge_message(connection, config, &stream_id)
+                    .await
+                    .is_ok()
+                {
+                    pending_retries.remove(&stream_id);
+                }
+                continue;
             }
-            continue;
+            Err(err) => {
+                eprintln!("failed to load pending retry entry {stream_id}: {err:?}");
+                pending_retries.schedule(stream_id, response_id, pending_retry_backoff_from_env());
+                continue;
+            }
         };
 
         match handle_message(
@@ -293,15 +298,26 @@ async fn load_queue_message(
     config: &QueueConfig,
     stream_id: &str,
     idle_ms: Option<u64>,
-) -> Option<QueueMessage> {
+) -> Result<Option<QueueMessage>> {
     let range: StreamRangeReply = connection
         .xrange(&config.stream_key, stream_id, stream_id)
-        .await
-        .ok()?;
-    let entry = range.ids.first()?;
-    let mut message = queue_message_from_stream_entry(entry)?;
+        .await?;
+    let Some(entry) = range.ids.first() else {
+        return Ok(None);
+    };
+    let Some(mut message) = queue_message_from_stream_entry(entry) else {
+        return Ok(None);
+    };
     message.idle_ms = idle_ms.or(message.idle_ms);
-    Some(message)
+    Ok(Some(message))
+}
+
+fn consumer_name_from_env() -> String {
+    if let Ok(name) = env::var("BACKGROUND_QUEUE_CONSUMER_NAME") {
+        return name;
+    }
+    let host = env::var("HOSTNAME").unwrap_or_else(|_| "duihua-background-worker".to_string());
+    format!("{}-{}", host, std::process::id())
 }
 
 async fn drain_pending_at_startup(
@@ -346,17 +362,24 @@ async fn drain_pending_at_startup(
         for pending_id in pending.ids {
             let idle_ms = Some(pending_id.last_delivered_ms as u64);
             let stream_id = pending_id.id.clone();
-            let Some(message) = load_queue_message(connection, config, &stream_id, idle_ms).await
-            else {
-                eprintln!("acknowledging malformed startup pending entry {stream_id}");
-                if acknowledge_message(connection, config, &stream_id)
-                    .await
-                    .is_err()
-                {
+            let message = match load_queue_message(connection, config, &stream_id, idle_ms).await {
+                Ok(Some(message)) => message,
+                Ok(None) => {
+                    eprintln!("acknowledging malformed startup pending entry {stream_id}");
+                    if acknowledge_message(connection, config, &stream_id)
+                        .await
+                        .is_err()
+                    {
+                        stopped_on_error = true;
+                        break;
+                    }
+                    continue;
+                }
+                Err(err) => {
+                    eprintln!("failed to load startup pending entry {stream_id}: {err:?}");
                     stopped_on_error = true;
                     break;
                 }
-                continue;
             };
 
             match handle_message(
@@ -489,10 +512,12 @@ async fn acknowledge_message(
     }
 }
 
+fn autoclaim_min_idle_ms_for_upstream_timeout(upstream_secs: usize) -> usize {
+    upstream_secs.saturating_add(120).saturating_mul(1000)
+}
+
 fn default_autoclaim_min_idle_ms() -> usize {
-    upstream_timeout_seconds_from_env()
-        .saturating_add(120)
-        .saturating_mul(1000)
+    autoclaim_min_idle_ms_for_upstream_timeout(upstream_timeout_seconds_from_env())
 }
 
 fn pending_retry_backoff_from_env() -> Duration {
@@ -658,10 +683,21 @@ mod tests {
 
     #[test]
     fn default_autoclaim_exceeds_upstream_timeout() {
-        env::remove_var("BACKGROUND_UPSTREAM_TIMEOUT_SECONDS");
-        env::remove_var("BACKGROUND_QUEUE_AUTOCLAIM_MIN_IDLE_MS");
-        let config = QueueConfig::from_env().expect("config");
-        assert_eq!(config.autoclaim_min_idle_ms, 720_000);
+        assert_eq!(autoclaim_min_idle_ms_for_upstream_timeout(600), 720_000);
+    }
+
+    #[test]
+    fn consumer_name_defaults_include_process_id() {
+        env::remove_var("BACKGROUND_QUEUE_CONSUMER_NAME");
+        let name = consumer_name_from_env();
+        assert!(name.ends_with(&format!("-{}", std::process::id())));
+    }
+
+    #[test]
+    fn consumer_name_honors_explicit_override() {
+        env::set_var("BACKGROUND_QUEUE_CONSUMER_NAME", "worker-a");
+        assert_eq!(consumer_name_from_env(), "worker-a");
+        env::remove_var("BACKGROUND_QUEUE_CONSUMER_NAME");
     }
 
     #[test]

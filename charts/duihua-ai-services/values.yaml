@@ -31,10 +31,10 @@ gateway:
       enabled: true
       streamKey: duihua:responses:background
       staleSeconds: 3600
+      streamMaxLen: 100000
 
 backgroundWorker:
-  # Separate image for background Responses API Jobs.
-  # The gateway deployment still uses gateway.image; only Jobs use the worker image.
+  # Image for the background-worker Deployment that consumes the Valkey stream (#45).
   image:
     repository: ghcr.io/example/duihua-background-worker
     tag: "0.1.0"

@@ -12,7 +12,11 @@ spec:
       labels:
         app: {{ include "duihua.fullname" . }}-gateway
     spec:
-      serviceAccountName: default
+      {{- if .Values.serviceAccount.create }}
+      serviceAccountName: {{ include "duihua.serviceAccountName" . }}
+      {{- else if .Values.serviceAccount.name }}
+      serviceAccountName: {{ .Values.serviceAccount.name | quote }}
+      {{- end }}
       containers:
         - name: gateway
           image: "{{ .Values.gateway.image.repository }}:{{ .Values.gateway.image.tag }}"
@@ -53,6 +57,8 @@ spec:
               value: {{ .Values.gateway.responsesApiStore.backgroundJobs.streamKey | quote }}
             - name: BACKGROUND_RESPONSE_STALE_SECONDS
               value: {{ .Values.gateway.responsesApiStore.backgroundJobs.staleSeconds | quote }}
+            - name: BACKGROUND_QUEUE_STREAM_MAXLEN
+              value: {{ .Values.gateway.responsesApiStore.backgroundJobs.streamMaxLen | quote }}
             {{- end }}
             - name: MODEL_UPSTREAMS
               {{ if .Values.inference.enabled }}

@@ -34,6 +34,15 @@ redis://{{ include "duihua.fullname" . }}-valkey:{{ .Values.valkey.service.port 
 {{- end -}}
 {{- end -}}
 
+{{- define "duihua.responseIdStoreAddress" -}}
+{{- if .Values.valkey.enabled -}}
+{{- printf "%s-valkey.%s.svc.cluster.local:%v" (include "duihua.fullname" .) .Release.Namespace .Values.valkey.service.port -}}
+{{- else -}}
+{{- $url := .Values.gateway.env.responseIdStoreUrl -}}
+{{- trimPrefix "rediss://" (trimPrefix "redis://" $url) -}}
+{{- end -}}
+{{- end -}}
+
 {{- define "duihua.background.enabled" -}}
 {{- if ne (include "duihua.responsesApiStore.enabled" .) "true" -}}
 {{- else if not .Values.backgroundWorker.enabled -}}
@@ -58,5 +67,13 @@ true
 {{- get $backgroundJobs "staleSeconds" -}}
 {{- else -}}
 {{- .Values.backgroundWorker.staleSeconds -}}
+{{- end -}}
+{{- end -}}
+
+{{- define "duihua.background.autoscaling.enabled" -}}
+{{- if ne (include "duihua.background.enabled" .) "true" -}}
+{{- else if not .Values.backgroundWorker.autoscaling.enabled -}}
+{{- else -}}
+true
 {{- end -}}
 {{- end -}}

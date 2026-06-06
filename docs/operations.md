@@ -61,11 +61,22 @@ When `gateway.responsesApiStore.enabled=true` and `backgroundWorker.enabled=true
 
 This path does not change inference Deployments or vLLM flags. Tune `backgroundWorker.streamKey` and `backgroundWorker.staleSeconds` for queue routing and stale-response reconciliation on `GET /v1/responses/{id}`. Stream retention (trim after `XACK`) is handled by the background-worker consumer, not gateway `XADD`.
 
+#### Background worker autoscaling (optional)
+
+Enable KEDA stream-lag autoscaling with `backgroundWorker.autoscaling.enabled=true`. The chart renders a `ScaledObject` that scales the worker Deployment from consumer-group lag on the background queue stream (`backgroundWorker.streamKey`, group `backgroundWorker.consumerGroup`). This uses KEDA's `redis-streams` scaler with `lagCount` and `activationLagCount`; only KEDA core is required (not the HTTP add-on).
+
+- **Scale-to-zero:** set `backgroundWorker.autoscaling.replicas.min` to `0`. Requires Valkey/Redis 7+ for lag-based scaling (the chart's Valkey 9.x image qualifies). Tune `activationLagCount` so brief idle periods do not flap replicas.
+- **Warm minimum:** set `replicas.min` to `1` or higher when you want a worker always ready (the kind defaults use `min: 1` so smoke tests do not depend on cold-start latency).
+- **Thresholds:** `lagCount` is the average lag target per replica; lower values scale up sooner. `maxConcurrentJobs` still limits upstream calls per pod.
+- **Redis address:** when using the chart-managed Valkey Service, the ScaledObject uses a cluster DNS FQDN (`<release>-valkey.<namespace>.svc.cluster.local`) so KEDA (typically in the `keda` namespace) can reach Redis. For an external store, set `gateway.env.responseIdStoreUrl` to a hostname KEDA can resolve cluster-wide.
+
+Local kind (`values-kind.yaml`) enables autoscaling with `min: 1`, `max: 2`, and a low `lagCount` so `scripts/smoke-test-kind.sh` can verify scale-up when queue lag grows.
+
 #### Local kind and CI scripts
 
 - `scripts/build-and-load-images.sh` builds and loads gateway and background-worker images, then restarts both Deployments when deployed.
 - `scripts/deploy-kind.sh` upgrades the Helm release and restarts gateway and background-worker Deployments so `:local` image tags are picked up.
 - `scripts/restart-background-worker-deployment.sh` restarts only the worker Deployment (optional `BACKGROUND_WORKER_DEPLOYMENT_REQUIRED=true` for hard failure when missing).
-- `scripts/smoke-test-kind.sh` waits for the gateway health endpoint and, when background queueing is enabled, for the background-worker Deployment to become ready before exercising completion, cancel, delete, and resource checks.
+- `scripts/smoke-test-kind.sh` waits for the gateway health endpoint and, when background queueing is enabled, for the background-worker Deployment to become ready before exercising completion, cancel, delete, resource checks, and optional KEDA scale-up when `backgroundWorker.autoscaling.enabled=true`.
 
 Set `backgroundWorker.enabled=false` to disable the worker Deployment while keeping the response store enabled. Disable `gateway.responsesApiStore.enabled` to turn off persistence and queueing entirely.

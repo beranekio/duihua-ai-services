@@ -1,0 +1,31 @@
+{{- if eq (include "duihua.background.autoscaling.enabled" .) "true" }}
+{{- $autoscaling := .Values.backgroundWorker.autoscaling }}
+{{- $workerName := printf "%s-background-worker" (include "duihua.fullname" .) }}
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: {{ $workerName }}
+  {{- with $autoscaling.scaledObjectAnnotations }}
+  annotations:
+{{ toYaml . | indent 4 }}
+  {{- end }}
+spec:
+  scaleTargetRef:
+    name: {{ $workerName }}
+    kind: Deployment
+    apiVersion: apps/v1
+  minReplicaCount: {{ $autoscaling.replicas.min | default 1 }}
+  maxReplicaCount: {{ $autoscaling.replicas.max | default 4 }}
+  cooldownPeriod: {{ $autoscaling.scaledownPeriod | default 300 }}
+  {{- with $autoscaling.pollingInterval }}
+  pollingInterval: {{ . }}
+  {{- end }}
+  triggers:
+    - type: redis-streams
+      metadata:
+        address: {{ include "duihua.responseIdStoreAddress" . | quote }}
+        stream: {{ include "duihua.background.streamKey" . | quote }}
+        consumerGroup: {{ .Values.backgroundWorker.consumerGroup | quote }}
+        lagCount: {{ $autoscaling.lagCount | default 5 | quote }}
+        activationLagCount: {{ $autoscaling.activationLagCount | default 1 | quote }}
+{{- end }}

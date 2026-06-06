@@ -13,6 +13,8 @@ BACKGROUND_POLL_ATTEMPTS="${BACKGROUND_POLL_ATTEMPTS:-45}"
 BACKGROUND_POLL_INTERVAL_SECONDS="${BACKGROUND_POLL_INTERVAL_SECONDS:-2}"
 CANCEL_POLL_ATTEMPTS="${CANCEL_POLL_ATTEMPTS:-20}"
 DELETE_POLL_ATTEMPTS="${DELETE_POLL_ATTEMPTS:-10}"
+AUTOSCALE_POLL_ATTEMPTS="${AUTOSCALE_POLL_ATTEMPTS:-24}"
+AUTOSCALE_POLL_INTERVAL_SECONDS="${AUTOSCALE_POLL_INTERVAL_SECONDS:-5}"
 
 require_command() {
   local command_name="$1"
@@ -377,6 +379,60 @@ print(f"background worker resources OK: {resources}")
 PY
 }
 
+background_worker_autoscaling_enabled() {
+  local scaledobject="${RELEASE_NAME}-duihua-ai-services-background-worker"
+  kubectl get scaledobject "${scaledobject}" -n "${NAMESPACE}" >/dev/null 2>&1
+}
+
+test_background_worker_autoscaling() {
+  echo "=== background worker autoscaling ==="
+  if ! background_queue_enabled; then
+    echo "background queue disabled; skipping autoscaling checks"
+    return 0
+  fi
+  if ! background_worker_deployed; then
+    echo "background queue enabled without worker Deployment; skipping autoscaling checks"
+    return 0
+  fi
+  if ! background_worker_autoscaling_enabled; then
+    echo "KEDA ScaledObject not enabled; skipping autoscaling checks"
+    return 0
+  fi
+
+  local deployment="${RELEASE_NAME}-duihua-ai-services-background-worker"
+  local scaledobject="${deployment}"
+  local initial_replicas max_replicas
+  initial_replicas="$(kubectl get deployment "${deployment}" -n "${NAMESPACE}" -o jsonpath='{.spec.replicas}')"
+  max_replicas="$(kubectl get scaledobject "${scaledobject}" -n "${NAMESPACE}" -o jsonpath='{.spec.maxReplicaCount}')"
+
+  echo "ScaledObject ${scaledobject} present (replicas=${initial_replicas}, max=${max_replicas})"
+
+  if [[ "${max_replicas}" -le "${initial_replicas}" ]]; then
+    echo "maxReplicaCount (${max_replicas}) <= current replicas (${initial_replicas}); skipping scale-up assertion"
+    return 0
+  fi
+
+  echo "Enqueueing background jobs to grow stream lag..."
+  local job_index
+  for job_index in 1 2 3; do
+    post_response "{\"model\":\"${DEFAULT_MODEL}\",\"input\":\"Autoscale lag test ${job_index}.\",\"background\":true}" >/dev/null
+  done
+
+  local attempt current_replicas
+  for attempt in $(seq 1 "${AUTOSCALE_POLL_ATTEMPTS}"); do
+    current_replicas="$(kubectl get deployment "${deployment}" -n "${NAMESPACE}" -o jsonpath='{.spec.replicas}')"
+    if [[ "${current_replicas}" -gt "${initial_replicas}" ]]; then
+      echo "worker scaled up from ${initial_replicas} to ${current_replicas} replica(s)"
+      return 0
+    fi
+    echo "Attempt ${attempt}/${AUTOSCALE_POLL_ATTEMPTS}: replicas still ${current_replicas}; waiting ${AUTOSCALE_POLL_INTERVAL_SECONDS}s..."
+    sleep "${AUTOSCALE_POLL_INTERVAL_SECONDS}"
+  done
+
+  echo "worker replicas did not scale above ${initial_replicas} after enqueueing background jobs" >&2
+  exit 1
+}
+
 main() {
   require_command curl
   require_command python3
@@ -398,6 +454,7 @@ main() {
   test_background_delete_tombstone
   test_in_flight_continuation_rejected
   test_background_worker_resources
+  test_background_worker_autoscaling
 
   echo
   echo "All kind gateway smoke tests passed."

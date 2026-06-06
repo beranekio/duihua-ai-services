@@ -99,7 +99,7 @@ To use an external Valkey/Redis-compatible service instead, keep `valkey.enabled
 
 For local Docker Compose, set `RESPONSES_API_STORE_ENABLED=true` when starting the stack to exercise persisted follow-up Responses API calls. Streaming responses are persisted after their `response.completed` event.
 
-With the Helm chart, `background=true` Responses API requests are enqueued on a Valkey stream and processed by the `duihua-background-worker` Deployment (synchronous upstream call per message, result written to Valkey). Enable `gateway.responsesApiStore.enabled=true`, `backgroundWorker.enabled=true`, and `valkey.enabled=true` (or an external response store URL). The kind workflow (`values-kind.yaml`) enables the store, Valkey, background worker, queue settings, and KEDA stream-lag autoscaling for local end-to-end background completion testing.
+With the Helm chart, `background=true` Responses API requests are enqueued on a Valkey stream and processed by the `duihua-background-worker` Deployment (synchronous upstream call per message, result written to Valkey). On rollout restart the worker drains in-flight jobs on SIGTERM before exit; set `backgroundWorker.terminationGracePeriodSeconds` above `backgroundWorker.upstreamTimeoutSeconds` plus `backgroundWorker.blockMs` and a safety margin (chart default 665s). The worker logs a recommended grace period at startup. Enable `gateway.responsesApiStore.enabled=true`, `backgroundWorker.enabled=true`, and `valkey.enabled=true` (or an external response store URL). The kind workflow (`values-kind.yaml`) enables the store, Valkey, background worker, queue settings, and KEDA stream-lag autoscaling for local end-to-end background completion testing.
 
 ### KEDA autoscaling for background workers (optional)
 

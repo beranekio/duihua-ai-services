@@ -43,6 +43,9 @@ backgroundWorker:
   pendingRetrySeconds: 30
   # Maximum simultaneous upstream calls per worker pod.
   maxConcurrentJobs: 1
+  # SIGTERM grace for rollout drain; should exceed upstream timeout + blockMs + margin.
+  terminationGracePeriodSeconds: 665
+  upstreamTimeoutSeconds: "600"
   autoscaling:
     # Scale the worker Deployment from Valkey stream consumer-group lag via KEDA.
     # Requires KEDA installed in the cluster (no HTTP add-on needed for this scaler).

@@ -25,6 +25,8 @@ gateway:
 
 backgroundWorker:
   enabled: true
+  upstreamTimeoutSeconds: "120"
+  terminationGracePeriodSeconds: 181
   image:
     repository: duihua-background-worker
     tag: kind

@@ -50,7 +50,7 @@ spec:
             - name: RESPONSES_BACKGROUND_ENABLED
               value: "true"
             - name: BACKGROUND_QUEUE_STREAM_KEY
-              value: {{ .Values.backgroundWorker.streamKey | quote }}
+              value: {{ include "duihua.background.streamKey" . | quote }}
             - name: BACKGROUND_RESPONSE_STALE_SECONDS
               value: {{ .Values.backgroundWorker.staleSeconds | quote }}
             {{- end }}

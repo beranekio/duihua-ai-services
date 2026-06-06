@@ -37,8 +37,17 @@ redis://{{ include "duihua.fullname" . }}-valkey:{{ .Values.valkey.service.port 
 {{- define "duihua.background.enabled" -}}
 {{- if ne (include "duihua.responsesApiStore.enabled" .) "true" -}}
 {{- else if not .Values.backgroundWorker.enabled -}}
-{{- else if and (hasKey .Values.gateway.responsesApiStore "backgroundJobs") (not .Values.gateway.responsesApiStore.backgroundJobs.enabled) -}}
+{{- else if eq (dig "backgroundJobs" "enabled" true .Values.gateway.responsesApiStore) false -}}
 {{- else -}}
 true
+{{- end -}}
+{{- end -}}
+
+{{- define "duihua.background.streamKey" -}}
+{{- $legacyStreamKey := dig "backgroundJobs" "streamKey" "" .Values.gateway.responsesApiStore -}}
+{{- if $legacyStreamKey -}}
+{{- $legacyStreamKey -}}
+{{- else -}}
+{{- .Values.backgroundWorker.streamKey -}}
 {{- end -}}
 {{- end -}}

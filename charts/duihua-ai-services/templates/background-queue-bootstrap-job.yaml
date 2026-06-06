@@ -1,4 +1,6 @@
 {{- if eq (include "duihua.background.queueBootstrap.enabled" .) "true" }}
+{{- $bootstrap := .Values.backgroundWorker.queueBootstrap | default dict }}
+{{- $bootstrapImage := $bootstrap.image | default dict }}
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -20,34 +22,66 @@ spec:
           {{- if .Values.valkey.enabled }}
           image: "{{ .Values.valkey.image.repository }}:{{ .Values.valkey.image.tag }}"
           imagePullPolicy: {{ .Values.valkey.image.pullPolicy }}
-          command:
-            - /bin/sh
-            - -ec
-            - |
-              valkey-cli -h {{ include "duihua.fullname" . }}-valkey -p {{ .Values.valkey.service.port }} \
-                XGROUP CREATE {{ include "duihua.background.streamKey" . | quote }} \
-                {{ .Values.backgroundWorker.consumerGroup | quote }} 0 MKSTREAM \
-                || true
           {{- else }}
-          image: redis:7-alpine
-          imagePullPolicy: IfNotPresent
+          image: "{{ $bootstrapImage.repository | default "redis" }}:{{ $bootstrapImage.tag | default "7-alpine" }}"
+          imagePullPolicy: {{ $bootstrapImage.pullPolicy | default "IfNotPresent" }}
+          {{- end }}
           env:
-            - name: RESPONSE_ID_STORE_URL
-              value: {{ include "duihua.responseIdStoreUrl" . | quote }}
             - name: BACKGROUND_QUEUE_STREAM_KEY
               value: {{ include "duihua.background.streamKey" . | quote }}
             - name: BACKGROUND_QUEUE_CONSUMER_GROUP
               value: {{ .Values.backgroundWorker.consumerGroup | quote }}
+            {{- if .Values.valkey.enabled }}
+            - name: VALKEY_HOST
+              value: {{ printf "%s-valkey" (include "duihua.fullname" .) | quote }}
+            - name: VALKEY_PORT
+              value: {{ .Values.valkey.service.port | quote }}
+            {{- else }}
+            - name: RESPONSE_ID_STORE_URL
+              value: {{ include "duihua.responseIdStoreUrl" . | quote }}
+            - name: QUEUE_BOOTSTRAP_TLS_INSECURE
+              value: {{ $bootstrap.tlsInsecure | default false | quote }}
+            {{- end }}
           command:
             - /bin/sh
             - -ec
             - |
-              cli_args="-u ${RESPONSE_ID_STORE_URL} --no-auth-warning"
-              case "${RESPONSE_ID_STORE_URL}" in
-                rediss://*) cli_args="${cli_args} --tls --insecure" ;;
-              esac
-              # shellcheck disable=SC2086
-              redis-cli ${cli_args} XGROUP CREATE "${BACKGROUND_QUEUE_STREAM_KEY}" \
-                "${BACKGROUND_QUEUE_CONSUMER_GROUP}" 0 MKSTREAM || true
-          {{- end }}
+              create_consumer_group() {
+                local output
+                local status=0
+                output="$("$@" 2>&1)" || status=$?
+                if [ "${status}" -eq 0 ]; then
+                  return 0
+                fi
+                case "${output}" in
+                  *BUSYGROUP*)
+                    echo "consumer group already exists"
+                    return 0
+                    ;;
+                  *)
+                    echo "${output}" >&2
+                    return "${status}"
+                    ;;
+                esac
+              }
+
+              if [ -n "${VALKEY_HOST:-}" ]; then
+                create_consumer_group valkey-cli -h "${VALKEY_HOST}" -p "${VALKEY_PORT}" \
+                  XGROUP CREATE "${BACKGROUND_QUEUE_STREAM_KEY}" \
+                  "${BACKGROUND_QUEUE_CONSUMER_GROUP}" 0 MKSTREAM
+              else
+                cli_args="-u ${RESPONSE_ID_STORE_URL} --no-auth-warning"
+                case "${RESPONSE_ID_STORE_URL}" in
+                  rediss://*)
+                    cli_args="${cli_args} --tls"
+                    if [ "${QUEUE_BOOTSTRAP_TLS_INSECURE}" = "true" ]; then
+                      cli_args="${cli_args} --insecure"
+                    fi
+                    ;;
+                esac
+                # shellcheck disable=SC2086
+                create_consumer_group redis-cli ${cli_args} XGROUP CREATE \
+                  "${BACKGROUND_QUEUE_STREAM_KEY}" \
+                  "${BACKGROUND_QUEUE_CONSUMER_GROUP}" 0 MKSTREAM
+              fi
 {{- end }}

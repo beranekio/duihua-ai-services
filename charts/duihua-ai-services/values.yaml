@@ -64,6 +64,17 @@ backgroundWorker:
       min: 1
       max: 4
     scaledObjectAnnotations: {}
+  queueBootstrap:
+    # Helm hook Job that creates the stream consumer group when autoscaling uses min: 0.
+    # Uses the chart Valkey image when valkey.enabled=true; otherwise configure an image
+    # reachable from your cluster (for example a mirrored redis image in air-gapped envs).
+    image:
+      repository: redis
+      tag: 7-alpine
+      pullPolicy: IfNotPresent
+    # When using an external rediss:// store, set true only if you accept skipping TLS
+    # verification for the bootstrap connection (prefer mounting a CA via a future option).
+    tlsInsecure: false
   resources:
     requests:
       cpu: 100m

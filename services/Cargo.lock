@@ -251,6 +251,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "duihua-common",
+ "redis",
  "reqwest",
  "rustls",
  "serde_json",

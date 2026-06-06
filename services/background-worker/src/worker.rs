@@ -20,10 +20,22 @@ pub enum ProcessOutcome {
     Retry,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum EntrySource {
+    /// Entry was returned by `XAUTOCLAIM` and already met the min-idle threshold.
+    Autoclaimed,
+    /// Entry was read from this consumer's pending list at startup.
+    StartupPending,
+    /// Entry was delivered live via `XREADGROUP`.
+    #[default]
+    Live,
+}
+
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ProcessContext {
     pub message_idle_ms: Option<u64>,
     pub autoclaim_min_idle_ms: usize,
+    pub entry_source: EntrySource,
 }
 
 pub async fn process_response(
@@ -149,9 +161,12 @@ fn pre_claim_action(stored: &StoredResponse, ctx: ProcessContext) -> PreClaimAct
 }
 
 fn is_stale_reclaim(ctx: ProcessContext) -> bool {
-    match ctx.message_idle_ms {
-        Some(idle) => idle >= ctx.autoclaim_min_idle_ms as u64,
-        None => false,
+    match ctx.entry_source {
+        EntrySource::Autoclaimed | EntrySource::StartupPending => true,
+        EntrySource::Live => match ctx.message_idle_ms {
+            Some(idle) => idle >= ctx.autoclaim_min_idle_ms as u64,
+            None => false,
+        },
     }
 }
 
@@ -355,7 +370,7 @@ mod tests {
     }
 
     #[test]
-    fn stale_in_progress_is_marked_failed_before_ack() {
+    fn autoclaimed_in_progress_is_stale_without_idle_metadata() {
         let interrupted = StoredResponse {
             upstream: "http://model".to_string(),
             response: json!({"status": "in_progress", "background": true}),
@@ -365,8 +380,9 @@ mod tests {
             enqueued_at: None,
         };
         let ctx = ProcessContext {
-            message_idle_ms: Some(720_000),
+            message_idle_ms: None,
             autoclaim_min_idle_ms: 720_000,
+            entry_source: EntrySource::Autoclaimed,
         };
         assert_eq!(
             pre_claim_action(&interrupted, ctx),
@@ -375,7 +391,28 @@ mod tests {
     }
 
     #[test]
-    fn recently_reclaimed_in_progress_stays_retryable() {
+    fn startup_pending_in_progress_is_stale_without_idle_metadata() {
+        let interrupted = StoredResponse {
+            upstream: "http://model".to_string(),
+            response: json!({"status": "in_progress", "background": true}),
+            input: vec![],
+            pending_upstream_request: None,
+            upstream_authorization: None,
+            enqueued_at: None,
+        };
+        let ctx = ProcessContext {
+            message_idle_ms: None,
+            autoclaim_min_idle_ms: 720_000,
+            entry_source: EntrySource::StartupPending,
+        };
+        assert_eq!(
+            pre_claim_action(&interrupted, ctx),
+            PreClaimAction::MarkInterruptedAndAck
+        );
+    }
+
+    #[test]
+    fn recently_reclaimed_live_in_progress_stays_retryable() {
         let interrupted = StoredResponse {
             upstream: "http://model".to_string(),
             response: json!({"status": "in_progress", "background": true}),
@@ -387,6 +424,7 @@ mod tests {
         let ctx = ProcessContext {
             message_idle_ms: Some(30_000),
             autoclaim_min_idle_ms: 720_000,
+            entry_source: EntrySource::Live,
         };
         assert_eq!(pre_claim_action(&interrupted, ctx), PreClaimAction::Retry);
     }

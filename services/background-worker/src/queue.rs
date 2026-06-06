@@ -11,7 +11,7 @@ use redis::{
     AsyncCommands, RedisError,
 };
 
-use crate::worker::{self, ProcessContext, ProcessOutcome};
+use crate::worker::{self, EntrySource, ProcessContext, ProcessOutcome};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct QueueMessage {
@@ -57,6 +57,9 @@ impl QueueConfig {
             .ok()
             .and_then(|value| value.parse().ok())
             .unwrap_or(10);
+        if autoclaim_batch_size == 0 {
+            bail!("BACKGROUND_QUEUE_AUTOCLAIM_BATCH_SIZE must be greater than 0");
+        }
 
         Ok(Self {
             redis_url,
@@ -103,14 +106,21 @@ pub async fn run() -> Result<()> {
                     &config,
                     &response_store,
                     &autoclaim.claimed,
+                    EntrySource::Autoclaimed,
                     false,
                 )
                 .await;
             }
+            Err(err) if is_nogroup(&err) => {
+                eprintln!("background queue consumer group missing during autoclaim; recreating");
+                if let Err(ensure_err) = ensure_consumer_group(&mut connection, &config).await {
+                    eprintln!("failed to recreate background queue consumer group: {ensure_err:?}");
+                    sleep_on_redis_error().await;
+                }
+            }
             Err(err) => {
                 eprintln!("failed to auto-claim background queue messages: {err:?}");
                 sleep_on_redis_error().await;
-                continue;
             }
         }
 
@@ -128,10 +138,24 @@ pub async fn run() -> Result<()> {
                     .iter()
                     .flat_map(|key| key.ids.iter().cloned())
                     .collect();
-                process_stream_entries(&mut connection, &config, &response_store, &entries, false)
-                    .await;
+                process_stream_entries(
+                    &mut connection,
+                    &config,
+                    &response_store,
+                    &entries,
+                    EntrySource::Live,
+                    false,
+                )
+                .await;
             }
             Ok(None) => {}
+            Err(err) if is_nogroup(&err) => {
+                eprintln!("background queue consumer group missing during read; recreating");
+                if let Err(ensure_err) = ensure_consumer_group(&mut connection, &config).await {
+                    eprintln!("failed to recreate background queue consumer group: {ensure_err:?}");
+                    sleep_on_redis_error().await;
+                }
+            }
             Err(err) => {
                 eprintln!("failed to read new background queue messages: {err:?}");
                 sleep_on_redis_error().await;
@@ -155,6 +179,15 @@ async fn drain_pending_at_startup(
             .await
         {
             Ok(reply) => reply,
+            Err(err) if is_nogroup(&err) => {
+                eprintln!(
+                    "background queue consumer group missing during startup drain; recreating"
+                );
+                if let Err(ensure_err) = ensure_consumer_group(connection, config).await {
+                    eprintln!("failed to recreate background queue consumer group: {ensure_err:?}");
+                }
+                continue;
+            }
             Err(err) => {
                 eprintln!("failed to drain pending background queue messages at startup: {err:?}");
                 sleep_on_redis_error().await;
@@ -175,9 +208,16 @@ async fn drain_pending_at_startup(
             break;
         }
 
-        if process_stream_entries(connection, config, response_store, &entries, true)
-            .await
-            .stopped_on_error
+        if process_stream_entries(
+            connection,
+            config,
+            response_store,
+            &entries,
+            EntrySource::StartupPending,
+            true,
+        )
+        .await
+        .stopped_on_error
         {
             break;
         }
@@ -193,6 +233,7 @@ async fn process_stream_entries(
     config: &QueueConfig,
     response_store: &duihua_common::ResponseStore,
     entries: &[StreamId],
+    entry_source: EntrySource,
     stop_on_error: bool,
 ) -> ProcessBatchOutcome {
     let (messages, invalid_ids) = split_stream_entries(entries);
@@ -215,7 +256,7 @@ async fn process_stream_entries(
 
     for message in messages {
         let response_id = message.response_id.clone();
-        match handle_message(connection, config, response_store, message).await {
+        match handle_message(connection, config, response_store, message, entry_source).await {
             Ok(()) => {}
             Err(err) => {
                 eprintln!("failed to process background queue message {response_id}: {err:?}");
@@ -260,10 +301,12 @@ async fn handle_message(
     config: &QueueConfig,
     response_store: &duihua_common::ResponseStore,
     message: QueueMessage,
+    entry_source: EntrySource,
 ) -> Result<()> {
     let ctx = ProcessContext {
         message_idle_ms: message.idle_ms,
         autoclaim_min_idle_ms: config.autoclaim_min_idle_ms,
+        entry_source,
     };
     match worker::process_response(response_store, &message.response_id, ctx).await? {
         ProcessOutcome::Ack => {
@@ -358,6 +401,10 @@ pub fn split_stream_entries(entries: &[StreamId]) -> (Vec<QueueMessage>, Vec<Str
 
 fn is_busygroup(err: &RedisError) -> bool {
     err.code() == Some("BUSYGROUP")
+}
+
+fn is_nogroup(err: &RedisError) -> bool {
+    err.code() == Some("NOGROUP")
 }
 
 fn is_unsupported_xackdel(err: &RedisError) -> bool {
@@ -464,5 +511,21 @@ mod tests {
         env::remove_var("BACKGROUND_QUEUE_AUTOCLAIM_MIN_IDLE_MS");
         let config = QueueConfig::from_env().expect("config");
         assert_eq!(config.autoclaim_min_idle_ms, 720_000);
+    }
+
+    #[test]
+    fn rejects_zero_autoclaim_batch_size() {
+        env::set_var("BACKGROUND_QUEUE_AUTOCLAIM_BATCH_SIZE", "0");
+        assert!(QueueConfig::from_env().is_err());
+        env::remove_var("BACKGROUND_QUEUE_AUTOCLAIM_BATCH_SIZE");
+    }
+
+    #[test]
+    fn detects_nogroup_errors() {
+        let err = redis::make_extension_error(
+            "NOGROUP".to_string(),
+            Some("NOGROUP No such key or consumer group".to_string()),
+        );
+        assert!(is_nogroup(&err));
     }
 }

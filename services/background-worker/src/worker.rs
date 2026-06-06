@@ -256,13 +256,10 @@ mod tests {
     }
 
     #[test]
-    fn defaults_upstream_timeout_to_ten_minutes() {
+    fn upstream_timeout_reads_env_or_defaults() {
         env::remove_var("BACKGROUND_UPSTREAM_TIMEOUT_SECONDS");
         assert_eq!(upstream_timeout_from_env(), Duration::from_secs(600));
-    }
 
-    #[test]
-    fn reads_upstream_timeout_from_env() {
         env::set_var("BACKGROUND_UPSTREAM_TIMEOUT_SECONDS", "120");
         assert_eq!(upstream_timeout_from_env(), Duration::from_secs(120));
         env::remove_var("BACKGROUND_UPSTREAM_TIMEOUT_SECONDS");

@@ -331,6 +331,7 @@ fn background_worker_store_env() -> Vec<(&'static str, String)> {
         "RESPONSE_ID_STORE_KEY_PREFIX",
         "RESPONSE_ID_STORE_TTL_SECONDS",
         "UPSTREAM_API_KEY",
+        "BACKGROUND_UPSTREAM_TIMEOUT_SECONDS",
     ] {
         if let Ok(value) = env::var(name) {
             env.push((name, value));
@@ -429,3 +430,27 @@ pub use duihua_common::{
     background_job_name, build_cancelled_response, build_queued_response, build_upstream_request,
     generate_response_id, is_in_flight_background, stored_response_status,
 };
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn background_worker_store_env_forwards_upstream_timeout() {
+        env::remove_var("BACKGROUND_UPSTREAM_TIMEOUT_SECONDS");
+        assert!(!background_worker_store_env()
+            .iter()
+            .any(|(name, _)| *name == "BACKGROUND_UPSTREAM_TIMEOUT_SECONDS"));
+
+        env::set_var("BACKGROUND_UPSTREAM_TIMEOUT_SECONDS", "900");
+        let vars = background_worker_store_env();
+        env::remove_var("BACKGROUND_UPSTREAM_TIMEOUT_SECONDS");
+
+        assert_eq!(
+            vars.iter()
+                .find(|(name, _)| *name == "BACKGROUND_UPSTREAM_TIMEOUT_SECONDS")
+                .map(|(_, value)| value.as_str()),
+            Some("900")
+        );
+    }
+}

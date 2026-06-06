@@ -5,9 +5,16 @@ use duihua_common::{parse_bool_env, response_store_from_env};
 use reqwest::Client;
 use tracing::info;
 
-use crate::{background, config::parse_model_upstreams, routes, state::AppState};
+use crate::{
+    background,
+    config::{init_rustls_provider, parse_model_upstreams},
+    routes,
+    state::AppState,
+};
 
 pub async fn run() -> Result<()> {
+    init_rustls_provider();
+
     let bind_addr = env::var("BIND_ADDR").unwrap_or_else(|_| "0.0.0.0:8080".to_string());
     let upstream_base = env::var("UPSTREAM_BASE_URL")
         .unwrap_or_else(|_| "http://vllm:8000/v1".to_string())

@@ -46,7 +46,7 @@ RELEASE_NAME="${RELEASE_NAME}" NAMESPACE="${NAMESPACE}" TIMEOUT="${TIMEOUT}" \
   "${ROOT_DIR}/scripts/restart-gateway-deployment.sh"
 
 RELEASE_NAME="${RELEASE_NAME}" NAMESPACE="${NAMESPACE}" TIMEOUT="${TIMEOUT}" \
-  KUBECTL_CONTEXT="${KUBECTL_CONTEXT}" BACKGROUND_WORKER_DEPLOYMENT_REQUIRED=true \
+  KUBECTL_CONTEXT="${KUBECTL_CONTEXT}" \
   "${ROOT_DIR}/scripts/restart-background-worker-deployment.sh"
 
 if [[ "${INFERENCE_ENABLED}" == "true" ]]; then

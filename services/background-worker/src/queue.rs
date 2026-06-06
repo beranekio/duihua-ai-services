@@ -15,7 +15,8 @@ use redis::{
     },
     AsyncCommands, RedisError,
 };
-use tokio::sync::{Mutex, Semaphore};
+use tokio::sync::{watch, Mutex, Semaphore};
+use tokio::task::JoinSet;
 
 use crate::worker::{self, EntrySource, ProcessContext, ProcessOutcome};
 
@@ -87,6 +88,10 @@ pub async fn run() -> Result<()> {
     let mut connection = connect_queue(&config).await?;
 
     ensure_consumer_group(&mut connection, &config).await?;
+    eprintln!(
+        "background worker startup: recommended terminationGracePeriodSeconds={}",
+        recommended_termination_grace_period_seconds()
+    );
     let job_concurrency = Arc::new(Semaphore::new(config.max_concurrent_jobs));
     drain_pending_at_startup(
         &mut connection,
@@ -98,69 +103,80 @@ pub async fn run() -> Result<()> {
 
     let mut autoclaim_cursor = "0-0".to_string();
     let pending_retries = Arc::new(Mutex::new(PendingRetryScheduler::new()));
+    let join_set = Arc::new(Mutex::new(JoinSet::new()));
+    let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
+    spawn_shutdown_listener(shutdown_tx);
 
     loop {
+        if shutdown_triggered(&shutdown_rx) {
+            break;
+        }
+
+        reap_completed_jobs(join_set.clone()).await;
+
         process_due_pending_retries(
             &mut connection,
             &config,
             &response_store,
             pending_retries.clone(),
             job_concurrency.clone(),
+            &shutdown_rx,
         )
         .await;
+        if shutdown_triggered(&shutdown_rx) {
+            break;
+        }
 
-        let autoclaim_result: Result<StreamAutoClaimReply, RedisError> = connection
-            .xautoclaim_options(
-                &config.stream_key,
-                &config.consumer_group,
-                &config.consumer_name,
-                config.autoclaim_min_idle_ms,
-                &autoclaim_cursor,
-                StreamAutoClaimOptions::default().count(1),
-            )
-            .await;
-        match autoclaim_result {
-            Ok(autoclaim) => {
-                autoclaim_cursor = autoclaim.next_stream_id;
-                process_stream_entries(
-                    &mut connection,
-                    &config,
-                    &response_store,
-                    &autoclaim.claimed,
-                    EntrySource::Autoclaimed,
-                    pending_retries.clone(),
-                    job_concurrency.clone(),
+        if !shutdown_triggered(&shutdown_rx) {
+            let autoclaim_result: Result<StreamAutoClaimReply, RedisError> = connection
+                .xautoclaim_options(
+                    &config.stream_key,
+                    &config.consumer_group,
+                    &config.consumer_name,
+                    config.autoclaim_min_idle_ms,
+                    &autoclaim_cursor,
+                    StreamAutoClaimOptions::default().count(1),
                 )
                 .await;
-            }
-            Err(err) if is_nogroup(&err) => {
-                eprintln!("background queue consumer group missing during autoclaim; recreating");
-                if let Err(ensure_err) = ensure_consumer_group(&mut connection, &config).await {
-                    eprintln!("failed to recreate background queue consumer group: {ensure_err:?}");
+            match autoclaim_result {
+                Ok(autoclaim) => {
+                    autoclaim_cursor = autoclaim.next_stream_id;
+                    process_stream_entries(
+                        &mut connection,
+                        &config,
+                        &response_store,
+                        &autoclaim.claimed,
+                        EntrySource::Autoclaimed,
+                        pending_retries.clone(),
+                        job_concurrency.clone(),
+                        join_set.clone(),
+                        &shutdown_rx,
+                    )
+                    .await;
+                }
+                Err(err) if is_nogroup(&err) => {
+                    eprintln!(
+                        "background queue consumer group missing during autoclaim; recreating"
+                    );
+                    if let Err(ensure_err) = ensure_consumer_group(&mut connection, &config).await {
+                        eprintln!(
+                            "failed to recreate background queue consumer group: {ensure_err:?}"
+                        );
+                        sleep_on_redis_error().await;
+                    }
+                }
+                Err(err) if is_blocking_command_timeout(&err) => {}
+                Err(err) => {
+                    eprintln!("failed to auto-claim background queue messages: {err:?}");
                     sleep_on_redis_error().await;
                 }
             }
-            Err(err) if is_blocking_command_timeout(&err) => {}
-            Err(err) => {
-                eprintln!("failed to auto-claim background queue messages: {err:?}");
-                sleep_on_redis_error().await;
-            }
         }
 
-        let new_opts = StreamReadOptions::default()
-            .group(&config.consumer_group, &config.consumer_name)
-            .block(config.block_ms)
-            .count(1);
-        let read_result: Result<Option<redis::streams::StreamReadReply>, RedisError> = connection
-            .xread_options(&[&config.stream_key], &[">"], &new_opts)
-            .await;
-        match read_result {
-            Ok(Some(reply)) => {
-                let entries: Vec<StreamId> = reply
-                    .keys
-                    .iter()
-                    .flat_map(|key| key.ids.iter().cloned())
-                    .collect();
+        match read_new_stream_entries(&mut connection, &config, &mut shutdown_rx).await {
+            ReadNewOutcome::Shutdown => break,
+            ReadNewOutcome::Idle => {}
+            ReadNewOutcome::Entries(entries) => {
                 process_stream_entries(
                     &mut connection,
                     &config,
@@ -169,24 +185,148 @@ pub async fn run() -> Result<()> {
                     EntrySource::Live,
                     pending_retries.clone(),
                     job_concurrency.clone(),
+                    join_set.clone(),
+                    &shutdown_rx,
                 )
                 .await;
             }
-            Ok(None) => {}
-            Err(err) if is_blocking_command_timeout(&err) => {}
-            Err(err) if is_nogroup(&err) => {
+            ReadNewOutcome::NoGroup => {
                 eprintln!("background queue consumer group missing during read; recreating");
                 if let Err(ensure_err) = ensure_consumer_group(&mut connection, &config).await {
                     eprintln!("failed to recreate background queue consumer group: {ensure_err:?}");
                     sleep_on_redis_error().await;
                 }
             }
-            Err(err) => {
-                eprintln!("failed to read new background queue messages: {err:?}");
-                sleep_on_redis_error().await;
+            ReadNewOutcome::RedisError => sleep_on_redis_error().await,
+        }
+    }
+
+    eprintln!("background worker draining in-flight jobs before exit");
+    job_concurrency.close();
+    drain_in_flight_jobs(join_set).await;
+    Ok(())
+}
+
+enum ReadNewOutcome {
+    Shutdown,
+    Idle,
+    Entries(Vec<StreamId>),
+    NoGroup,
+    RedisError,
+}
+
+fn shutdown_triggered(shutdown_rx: &watch::Receiver<bool>) -> bool {
+    *shutdown_rx.borrow()
+}
+
+fn spawn_shutdown_listener(shutdown_tx: watch::Sender<bool>) {
+    tokio::spawn(async move {
+        wait_for_shutdown_signal().await;
+        eprintln!("background worker shutdown signal received; stopping new queue reads");
+        let _ = shutdown_tx.send(true);
+    });
+}
+
+async fn wait_for_shutdown_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        let mut sigterm =
+            signal(SignalKind::terminate()).expect("failed to install SIGTERM handler");
+        let mut sigint = signal(SignalKind::interrupt()).expect("failed to install SIGINT handler");
+        tokio::select! {
+            _ = sigterm.recv() => {}
+            _ = sigint.recv() => {}
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        tokio::signal::ctrl_c()
+            .await
+            .expect("failed to install Ctrl+C handler");
+    }
+}
+
+async fn read_new_stream_entries(
+    connection: &mut ConnectionManager,
+    config: &QueueConfig,
+    shutdown_rx: &mut watch::Receiver<bool>,
+) -> ReadNewOutcome {
+    if shutdown_triggered(shutdown_rx) {
+        return ReadNewOutcome::Shutdown;
+    }
+
+    let new_opts = StreamReadOptions::default()
+        .group(&config.consumer_group, &config.consumer_name)
+        .block(config.block_ms)
+        .count(1);
+    let stream_keys = [&config.stream_key];
+    let stream_ids = [">"];
+
+    tokio::select! {
+        biased;
+        changed = shutdown_rx.changed() => {
+            match changed {
+                Ok(()) if shutdown_triggered(shutdown_rx) => {
+                    let _ = shutdown_rx.borrow_and_update();
+                    ReadNewOutcome::Shutdown
+                }
+                Ok(()) => ReadNewOutcome::Idle,
+                Err(_) => ReadNewOutcome::Shutdown,
+            }
+        }
+        read_result = connection.xread_options::<_, _, Option<redis::streams::StreamReadReply>>(
+            &stream_keys,
+            &stream_ids,
+            &new_opts,
+        ) => {
+            match read_result {
+                Ok(Some(reply)) => {
+                    let entries: Vec<StreamId> = reply
+                        .keys
+                        .iter()
+                        .flat_map(|key| key.ids.iter().cloned())
+                        .collect();
+                    ReadNewOutcome::Entries(entries)
+                }
+                Ok(None) => ReadNewOutcome::Idle,
+                Err(err) if is_blocking_command_timeout(&err) => ReadNewOutcome::Idle,
+                Err(err) if is_nogroup(&err) => ReadNewOutcome::NoGroup,
+                Err(err) => {
+                    eprintln!("failed to read new background queue messages: {err:?}");
+                    ReadNewOutcome::RedisError
+                }
             }
         }
     }
+}
+
+async fn reap_completed_jobs(join_set: Arc<Mutex<JoinSet<()>>>) {
+    let mut join_set = join_set.lock().await;
+    while let Some(result) = join_set.try_join_next() {
+        if let Err(err) = result {
+            eprintln!("background queue job task failed: {err:?}");
+        }
+    }
+}
+
+async fn drain_in_flight_jobs(join_set: Arc<Mutex<JoinSet<()>>>) {
+    let mut join_set = join_set.lock().await;
+    drain_in_flight_jobs_mut(&mut join_set).await;
+}
+
+async fn drain_in_flight_jobs_mut(join_set: &mut JoinSet<()>) {
+    while let Some(result) = join_set.join_next().await {
+        if let Err(err) = result {
+            eprintln!("background queue job task failed during shutdown drain: {err:?}");
+        }
+    }
+}
+
+pub fn recommended_termination_grace_period_seconds() -> u64 {
+    upstream_timeout_seconds_from_env()
+        .saturating_add(60)
+        .max(30) as u64
 }
 
 #[derive(Debug)]
@@ -235,12 +375,16 @@ async fn process_due_pending_retries(
     response_store: &duihua_common::ResponseStore,
     pending_retries: Arc<Mutex<PendingRetryScheduler>>,
     job_concurrency: Arc<Semaphore>,
+    shutdown_rx: &watch::Receiver<bool>,
 ) {
     let due_stream_ids = {
         let scheduler = pending_retries.lock().await;
         scheduler.due_stream_ids()
     };
     for stream_id in due_stream_ids {
+        if shutdown_triggered(shutdown_rx) {
+            break;
+        }
         let response_id = {
             let scheduler = pending_retries.lock().await;
             let Some(retry_entry) = scheduler.entries.get(&stream_id) else {
@@ -481,6 +625,7 @@ async fn drain_pending_at_startup(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn process_stream_entries(
     connection: &mut ConnectionManager,
     config: &QueueConfig,
@@ -489,7 +634,13 @@ async fn process_stream_entries(
     entry_source: EntrySource,
     pending_retries: Arc<Mutex<PendingRetryScheduler>>,
     job_concurrency: Arc<Semaphore>,
+    join_set: Arc<Mutex<JoinSet<()>>>,
+    shutdown_rx: &watch::Receiver<bool>,
 ) {
+    if shutdown_triggered(shutdown_rx) {
+        return;
+    }
+
     let (messages, invalid_ids) = split_stream_entries(entries);
 
     for stream_id in invalid_ids {
@@ -500,6 +651,9 @@ async fn process_stream_entries(
     }
 
     for message in messages {
+        if shutdown_triggered(shutdown_rx) {
+            break;
+        }
         let response_id = message.response_id.clone();
         let stream_id = message.stream_id.clone();
         let permit = match job_concurrency.clone().acquire_owned().await {
@@ -513,7 +667,7 @@ async fn process_stream_entries(
         let config = config.clone();
         let response_store = response_store.clone();
         let pending_retries = pending_retries.clone();
-        tokio::spawn(async move {
+        join_set.lock().await.spawn(async move {
             let _permit = permit;
             match handle_message(
                 &mut worker_connection,
@@ -852,6 +1006,23 @@ mod tests {
             redis_response_timeout_for_block_ms(5_000),
             Duration::from_millis(7_000)
         );
+    }
+
+    #[test]
+    fn recommended_grace_period_exceeds_upstream_timeout() {
+        env::set_var("BACKGROUND_UPSTREAM_TIMEOUT_SECONDS", "600");
+        assert_eq!(recommended_termination_grace_period_seconds(), 660);
+        env::remove_var("BACKGROUND_UPSTREAM_TIMEOUT_SECONDS");
+    }
+
+    #[tokio::test]
+    async fn drain_in_flight_jobs_waits_for_spawned_tasks() {
+        let mut join_set = JoinSet::new();
+        join_set.spawn(async {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        });
+        drain_in_flight_jobs_mut(&mut join_set).await;
+        assert!(join_set.is_empty());
     }
 
     #[test]

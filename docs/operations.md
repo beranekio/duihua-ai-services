@@ -83,3 +83,9 @@ Local kind (`values-kind.yaml`) enables autoscaling with `min: 1`, `max: 2`, and
 - `scripts/smoke-test-kind.sh` waits for the gateway health endpoint and, when background queueing is enabled, for the background-worker Deployment to become ready before exercising completion, cancel, delete, resource checks, and optional KEDA scale-up when `backgroundWorker.autoscaling.enabled=true`.
 
 Set `backgroundWorker.enabled=false` to disable the worker Deployment while keeping the response store enabled. Disable `gateway.responsesApiStore.enabled` to turn off persistence and queueing entirely.
+
+#### Background worker rollouts and graceful shutdown
+
+On SIGTERM (Helm upgrade, `kubectl rollout restart`, or pod deletion), the worker stops issuing new `XREADGROUP` / `XAUTOCLAIM` reads, closes its concurrency limiter, and awaits in-flight upstream jobs before exiting. Tune `backgroundWorker.terminationGracePeriodSeconds` to exceed `backgroundWorker.upstreamTimeoutSeconds` (chart default 660s grace for 600s upstream timeout) so rollouts can finish active background Responses API work instead of leaving entries orphaned in the old pod's pending list until autoclaim marks them failed.
+
+`scripts/restart-background-worker-deployment.sh` (used by `deploy-kind.sh` and `build-and-load-images.sh`) triggers this path; allow the grace period to elapse before forcing pod deletion.

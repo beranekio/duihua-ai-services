@@ -148,7 +148,7 @@ fn pre_claim_action(stored: &StoredResponse, ctx: ProcessContext) -> PreClaimAct
     }
 
     match stored_response_status(stored) {
-        Some("completed") | Some("failed") => PreClaimAction::Ack,
+        Some("completed") | Some("failed") | Some("incomplete") => PreClaimAction::Ack,
         Some("in_progress") if stored.pending_upstream_request.is_none() => {
             if is_stale_reclaim(ctx) {
                 PreClaimAction::MarkInterruptedAndAck
@@ -427,6 +427,22 @@ mod tests {
             entry_source: EntrySource::Live,
         };
         assert_eq!(pre_claim_action(&interrupted, ctx), PreClaimAction::Retry);
+    }
+
+    #[test]
+    fn incomplete_responses_are_ackable() {
+        let incomplete = StoredResponse {
+            upstream: "http://model".to_string(),
+            response: json!({"status": "incomplete", "background": true}),
+            input: vec![],
+            pending_upstream_request: None,
+            upstream_authorization: None,
+            enqueued_at: None,
+        };
+        assert_eq!(
+            pre_claim_action(&incomplete, ProcessContext::default()),
+            PreClaimAction::Ack
+        );
     }
 
     #[test]

@@ -161,6 +161,54 @@ pub async fn run() -> Result<()> {
                 sleep_on_redis_error().await;
             }
         }
+
+        drain_pending_live_retry(&mut connection, &config, &response_store).await;
+    }
+}
+
+async fn drain_pending_live_retry(
+    connection: &mut ConnectionManager,
+    config: &QueueConfig,
+    response_store: &duihua_common::ResponseStore,
+) {
+    let pending_opts = StreamReadOptions::default()
+        .group(&config.consumer_group, &config.consumer_name)
+        .count(config.autoclaim_batch_size);
+
+    let read_result: Result<Option<redis::streams::StreamReadReply>, RedisError> = connection
+        .xread_options(&[&config.stream_key], &["0"], &pending_opts)
+        .await;
+
+    match read_result {
+        Ok(Some(reply)) => {
+            let entries: Vec<StreamId> = reply
+                .keys
+                .iter()
+                .flat_map(|key| key.ids.iter().cloned())
+                .collect();
+            if entries.is_empty() {
+                return;
+            }
+            process_stream_entries(
+                connection,
+                config,
+                response_store,
+                &entries,
+                EntrySource::Live,
+                false,
+            )
+            .await;
+        }
+        Ok(None) => {}
+        Err(err) if is_nogroup(&err) => {
+            eprintln!("background queue consumer group missing during pending retry; recreating");
+            if let Err(ensure_err) = ensure_consumer_group(connection, config).await {
+                eprintln!("failed to recreate background queue consumer group: {ensure_err:?}");
+            }
+        }
+        Err(err) => {
+            eprintln!("failed to retry pending background queue messages: {err:?}");
+        }
     }
 }
 

@@ -733,12 +733,10 @@ async fn process_stream_entries(
     for message in messages {
         let response_id = message.response_id.clone();
         let stream_id = message.stream_id.clone();
-        let Some(permit) = reserved_permit.take().or(acquire_job_permit(
-            job_concurrency.clone(),
-            shutdown_rx,
-            true,
-        )
-        .await) else {
+        let Some(permit) = (match reserved_permit.take() {
+            Some(permit) => Some(permit),
+            None => acquire_job_permit(job_concurrency.clone(), shutdown_rx, true).await,
+        }) else {
             break;
         };
 

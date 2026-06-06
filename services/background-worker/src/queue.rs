@@ -1,9 +1,9 @@
 use std::{env, time::Duration};
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use duihua_common::response_store_from_env;
 use redis::{
-    aio::MultiplexedConnection,
+    aio::ConnectionManager,
     streams::{
         StreamAutoClaimOptions, StreamAutoClaimReply, StreamDeletionPolicy, StreamId,
         StreamReadOptions,
@@ -11,12 +11,13 @@ use redis::{
     AsyncCommands, RedisError,
 };
 
-use crate::worker::{self, ProcessOutcome};
+use crate::worker::{self, ProcessContext, ProcessOutcome};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct QueueMessage {
     pub stream_id: String,
     pub response_id: String,
+    pub idle_ms: Option<u64>,
 }
 
 pub struct QueueConfig {
@@ -44,10 +45,14 @@ impl QueueConfig {
             .ok()
             .and_then(|value| value.parse().ok())
             .unwrap_or(5_000);
+        if block_ms == 0 {
+            bail!("BACKGROUND_QUEUE_BLOCK_MS must be greater than 0");
+        }
         let autoclaim_min_idle_ms = env::var("BACKGROUND_QUEUE_AUTOCLAIM_MIN_IDLE_MS")
             .ok()
             .and_then(|value| value.parse().ok())
-            .unwrap_or(60_000);
+            .unwrap_or_else(default_autoclaim_min_idle_ms);
+        warn_if_autoclaim_shorter_than_upstream(autoclaim_min_idle_ms);
         let autoclaim_batch_size = env::var("BACKGROUND_QUEUE_AUTOCLAIM_BATCH_SIZE")
             .ok()
             .and_then(|value| value.parse().ok())
@@ -70,8 +75,7 @@ pub async fn run() -> Result<()> {
     let response_store = response_store_from_env().await?;
     let client = redis::Client::open(config.redis_url.as_str())
         .with_context(|| format!("invalid RESPONSE_ID_STORE_URL {}", config.redis_url))?;
-    let mut connection = client
-        .get_multiplexed_async_connection()
+    let mut connection = ConnectionManager::new(client)
         .await
         .with_context(|| "failed to connect to background queue")?;
 
@@ -99,6 +103,7 @@ pub async fn run() -> Result<()> {
                     &config,
                     &response_store,
                     &autoclaim.claimed,
+                    false,
                 )
                 .await;
             }
@@ -123,7 +128,8 @@ pub async fn run() -> Result<()> {
                     .iter()
                     .flat_map(|key| key.ids.iter().cloned())
                     .collect();
-                process_stream_entries(&mut connection, &config, &response_store, &entries).await;
+                process_stream_entries(&mut connection, &config, &response_store, &entries, false)
+                    .await;
             }
             Ok(None) => {}
             Err(err) => {
@@ -135,7 +141,7 @@ pub async fn run() -> Result<()> {
 }
 
 async fn drain_pending_at_startup(
-    connection: &mut MultiplexedConnection,
+    connection: &mut ConnectionManager,
     config: &QueueConfig,
     response_store: &duihua_common::ResponseStore,
 ) {
@@ -152,7 +158,7 @@ async fn drain_pending_at_startup(
             Err(err) => {
                 eprintln!("failed to drain pending background queue messages at startup: {err:?}");
                 sleep_on_redis_error().await;
-                continue;
+                break;
             }
         };
 
@@ -169,9 +175,9 @@ async fn drain_pending_at_startup(
             break;
         }
 
-        if process_stream_entries(connection, config, response_store, &entries)
+        if process_stream_entries(connection, config, response_store, &entries, true)
             .await
-            .stopped_on_retry
+            .stopped_on_error
         {
             break;
         }
@@ -179,23 +185,32 @@ async fn drain_pending_at_startup(
 }
 
 struct ProcessBatchOutcome {
-    stopped_on_retry: bool,
+    stopped_on_error: bool,
 }
 
 async fn process_stream_entries(
-    connection: &mut MultiplexedConnection,
+    connection: &mut ConnectionManager,
     config: &QueueConfig,
     response_store: &duihua_common::ResponseStore,
     entries: &[StreamId],
+    stop_on_error: bool,
 ) -> ProcessBatchOutcome {
     let (messages, invalid_ids) = split_stream_entries(entries);
-    let mut stopped_on_retry = false;
+    let mut stopped_on_error = false;
 
     for stream_id in invalid_ids {
         eprintln!("acknowledging malformed background queue entry {stream_id}");
         if let Err(err) = acknowledge_message(connection, config, &stream_id).await {
             eprintln!("failed to acknowledge malformed entry {stream_id}: {err:?}");
+            if stop_on_error {
+                stopped_on_error = true;
+                break;
+            }
         }
+    }
+
+    if stopped_on_error {
+        return ProcessBatchOutcome { stopped_on_error };
     }
 
     for message in messages {
@@ -204,19 +219,19 @@ async fn process_stream_entries(
             Ok(()) => {}
             Err(err) => {
                 eprintln!("failed to process background queue message {response_id}: {err:?}");
-                if err.downcast_ref::<RetryableMessageError>().is_some() {
-                    stopped_on_retry = true;
+                if stop_on_error || err.downcast_ref::<RetryableMessageError>().is_some() {
+                    stopped_on_error = true;
                     break;
                 }
             }
         }
     }
 
-    ProcessBatchOutcome { stopped_on_retry }
+    ProcessBatchOutcome { stopped_on_error }
 }
 
 async fn ensure_consumer_group(
-    connection: &mut MultiplexedConnection,
+    connection: &mut ConnectionManager,
     config: &QueueConfig,
 ) -> Result<()> {
     match connection
@@ -241,12 +256,16 @@ impl std::fmt::Display for RetryableMessageError {
 impl std::error::Error for RetryableMessageError {}
 
 async fn handle_message(
-    connection: &mut MultiplexedConnection,
+    connection: &mut ConnectionManager,
     config: &QueueConfig,
     response_store: &duihua_common::ResponseStore,
     message: QueueMessage,
 ) -> Result<()> {
-    match worker::process_response(response_store, &message.response_id).await? {
+    let ctx = ProcessContext {
+        message_idle_ms: message.idle_ms,
+        autoclaim_min_idle_ms: config.autoclaim_min_idle_ms,
+    };
+    match worker::process_response(response_store, &message.response_id, ctx).await? {
         ProcessOutcome::Ack => {
             acknowledge_message(connection, config, &message.stream_id).await?;
         }
@@ -258,7 +277,7 @@ async fn handle_message(
 }
 
 async fn acknowledge_message(
-    connection: &mut MultiplexedConnection,
+    connection: &mut ConnectionManager,
     config: &QueueConfig,
     stream_id: &str,
 ) -> Result<()> {
@@ -284,6 +303,28 @@ async fn acknowledge_message(
     }
 }
 
+fn default_autoclaim_min_idle_ms() -> usize {
+    upstream_timeout_seconds_from_env()
+        .saturating_add(120)
+        .saturating_mul(1000)
+}
+
+fn upstream_timeout_seconds_from_env() -> usize {
+    env::var("BACKGROUND_UPSTREAM_TIMEOUT_SECONDS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(600)
+}
+
+fn warn_if_autoclaim_shorter_than_upstream(autoclaim_min_idle_ms: usize) {
+    let upstream_ms = upstream_timeout_seconds_from_env().saturating_mul(1000);
+    if autoclaim_min_idle_ms < upstream_ms {
+        eprintln!(
+            "warning: BACKGROUND_QUEUE_AUTOCLAIM_MIN_IDLE_MS ({autoclaim_min_idle_ms}) is shorter than BACKGROUND_UPSTREAM_TIMEOUT_SECONDS ({upstream_ms} ms); active upstream calls may be reclaimed and marked failed"
+        );
+    }
+}
+
 async fn sleep_on_redis_error() {
     tokio::time::sleep(Duration::from_secs(1)).await;
 }
@@ -296,6 +337,9 @@ pub fn queue_message_from_stream_entry(entry: &StreamId) -> Option<QueueMessage>
     response_id_from_stream_entry(entry).map(|response_id| QueueMessage {
         stream_id: entry.id.clone(),
         response_id,
+        idle_ms: entry
+            .milliseconds_elapsed_from_delivery
+            .map(|idle| idle as u64),
     })
 }
 
@@ -337,7 +381,7 @@ mod tests {
                 Value::BulkString(b"resp_abc".to_vec()),
             )]
             .into(),
-            milliseconds_elapsed_from_delivery: None,
+            milliseconds_elapsed_from_delivery: Some(42_usize),
             delivered_count: None,
         };
 
@@ -350,6 +394,7 @@ mod tests {
             Some(QueueMessage {
                 stream_id: "1717670000000-0".to_string(),
                 response_id: "resp_abc".to_string(),
+                idle_ms: Some(42),
             })
         );
     }
@@ -401,7 +446,23 @@ mod tests {
             vec![QueueMessage {
                 stream_id: "1717670000000-0".to_string(),
                 response_id: "resp_xyz".to_string(),
+                idle_ms: None,
             }]
         );
+    }
+
+    #[test]
+    fn rejects_zero_block_ms() {
+        env::set_var("BACKGROUND_QUEUE_BLOCK_MS", "0");
+        assert!(QueueConfig::from_env().is_err());
+        env::remove_var("BACKGROUND_QUEUE_BLOCK_MS");
+    }
+
+    #[test]
+    fn default_autoclaim_exceeds_upstream_timeout() {
+        env::remove_var("BACKGROUND_UPSTREAM_TIMEOUT_SECONDS");
+        env::remove_var("BACKGROUND_QUEUE_AUTOCLAIM_MIN_IDLE_MS");
+        let config = QueueConfig::from_env().expect("config");
+        assert_eq!(config.autoclaim_min_idle_ms, 720_000);
     }
 }

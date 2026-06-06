@@ -20,17 +20,25 @@ pub enum ProcessOutcome {
     Retry,
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ProcessContext {
+    pub message_idle_ms: Option<u64>,
+    pub autoclaim_min_idle_ms: usize,
+}
+
 pub async fn process_response(
     response_store: &ResponseStore,
     response_id: &str,
+    ctx: ProcessContext,
 ) -> Result<ProcessOutcome> {
     let upstream_api_key = env::var("UPSTREAM_API_KEY").ok();
 
     let Some(stored) = response_store.load(response_id).await? else {
         return Ok(ProcessOutcome::Ack);
     };
-    match pre_claim_action(&stored) {
+    match pre_claim_action(&stored, ctx) {
         PreClaimAction::Ack => return Ok(ProcessOutcome::Ack),
+        PreClaimAction::Retry => return Ok(ProcessOutcome::Retry),
         PreClaimAction::MarkInterruptedAndAck => {
             mark_failed(
                 response_store,
@@ -44,7 +52,7 @@ pub async fn process_response(
     }
 
     let Some(work) = claim_for_processing(response_store, response_id).await? else {
-        return outcome_after_failed_claim(response_store, response_id).await;
+        return outcome_after_failed_claim(response_store, response_id, ctx).await;
     };
 
     let http = upstream_http_client()?;
@@ -119,9 +127,10 @@ enum PreClaimAction {
     Ack,
     MarkInterruptedAndAck,
     Claim,
+    Retry,
 }
 
-fn pre_claim_action(stored: &StoredResponse) -> PreClaimAction {
+fn pre_claim_action(stored: &StoredResponse, ctx: ProcessContext) -> PreClaimAction {
     if !should_persist(stored) {
         return PreClaimAction::Ack;
     }
@@ -129,21 +138,34 @@ fn pre_claim_action(stored: &StoredResponse) -> PreClaimAction {
     match stored_response_status(stored) {
         Some("completed") | Some("failed") => PreClaimAction::Ack,
         Some("in_progress") if stored.pending_upstream_request.is_none() => {
-            PreClaimAction::MarkInterruptedAndAck
+            if is_stale_reclaim(ctx) {
+                PreClaimAction::MarkInterruptedAndAck
+            } else {
+                PreClaimAction::Retry
+            }
         }
         _ => PreClaimAction::Claim,
+    }
+}
+
+fn is_stale_reclaim(ctx: ProcessContext) -> bool {
+    match ctx.message_idle_ms {
+        Some(idle) => idle >= ctx.autoclaim_min_idle_ms as u64,
+        None => false,
     }
 }
 
 async fn outcome_after_failed_claim(
     response_store: &ResponseStore,
     response_id: &str,
+    ctx: ProcessContext,
 ) -> Result<ProcessOutcome> {
     let Some(stored) = response_store.load(response_id).await? else {
         return Ok(ProcessOutcome::Ack);
     };
-    match pre_claim_action(&stored) {
+    match pre_claim_action(&stored, ctx) {
         PreClaimAction::Ack => Ok(ProcessOutcome::Ack),
+        PreClaimAction::Retry => Ok(ProcessOutcome::Retry),
         PreClaimAction::MarkInterruptedAndAck => {
             mark_failed(
                 response_store,
@@ -333,7 +355,7 @@ mod tests {
     }
 
     #[test]
-    fn interrupted_in_progress_is_marked_failed_before_ack() {
+    fn stale_in_progress_is_marked_failed_before_ack() {
         let interrupted = StoredResponse {
             upstream: "http://model".to_string(),
             response: json!({"status": "in_progress", "background": true}),
@@ -342,10 +364,31 @@ mod tests {
             upstream_authorization: None,
             enqueued_at: None,
         };
+        let ctx = ProcessContext {
+            message_idle_ms: Some(720_000),
+            autoclaim_min_idle_ms: 720_000,
+        };
         assert_eq!(
-            pre_claim_action(&interrupted),
+            pre_claim_action(&interrupted, ctx),
             PreClaimAction::MarkInterruptedAndAck
         );
+    }
+
+    #[test]
+    fn recently_reclaimed_in_progress_stays_retryable() {
+        let interrupted = StoredResponse {
+            upstream: "http://model".to_string(),
+            response: json!({"status": "in_progress", "background": true}),
+            input: vec![],
+            pending_upstream_request: None,
+            upstream_authorization: None,
+            enqueued_at: None,
+        };
+        let ctx = ProcessContext {
+            message_idle_ms: Some(30_000),
+            autoclaim_min_idle_ms: 720_000,
+        };
+        assert_eq!(pre_claim_action(&interrupted, ctx), PreClaimAction::Retry);
     }
 
     #[test]
@@ -358,7 +401,10 @@ mod tests {
             upstream_authorization: None,
             enqueued_at: None,
         };
-        assert_eq!(pre_claim_action(&queued), PreClaimAction::Claim);
+        assert_eq!(
+            pre_claim_action(&queued, ProcessContext::default()),
+            PreClaimAction::Claim
+        );
     }
 
     #[test]

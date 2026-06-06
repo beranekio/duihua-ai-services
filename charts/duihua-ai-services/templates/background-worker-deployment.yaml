@@ -4,7 +4,9 @@ kind: Deployment
 metadata:
   name: {{ include "duihua.fullname" . }}-background-worker
 spec:
+  {{- if ne (include "duihua.background.autoscaling.enabled" .) "true" }}
   replicas: {{ .Values.backgroundWorker.replicaCount }}
+  {{- end }}
   selector:
     matchLabels:
       app: {{ include "duihua.fullname" . }}-background-worker

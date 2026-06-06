@@ -35,6 +35,16 @@ backgroundWorker:
   pendingRetrySeconds: 5
   # Keep below the redis-rs client response timeout so blocking reads do not error-loop.
   blockMs: 1000
+  autoscaling:
+    enabled: true
+    lagCount: 1
+    activationLagCount: 0
+    pollingInterval: 5
+    scaledownPeriod: 60
+    replicas:
+      # min=1 keeps the worker warm for smoke tests; set min=0 to exercise scale-to-zero locally.
+      min: 1
+      max: 2
 
 inference:
   enabled: true
@@ -80,6 +90,9 @@ inference:
         # HTTP add-on. This annotation lets you override the default.
       scaledObjectAnnotations: {}
       annotations: {}
+
+serviceAccount:
+  create: true
 
 valkey:
   enabled: true

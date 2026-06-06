@@ -99,7 +99,25 @@ To use an external Valkey/Redis-compatible service instead, keep `valkey.enabled
 
 For local Docker Compose, set `RESPONSES_API_STORE_ENABLED=true` when starting the stack to exercise persisted follow-up Responses API calls. Streaming responses are persisted after their `response.completed` event.
 
-With the Helm chart, `background=true` Responses API requests are enqueued on a Valkey stream and processed by the `duihua-background-worker` Deployment (synchronous upstream call per message, result written to Valkey). Enable `gateway.responsesApiStore.enabled=true`, `backgroundWorker.enabled=true`, and `valkey.enabled=true` (or an external response store URL). The kind workflow (`values-kind.yaml`) enables the store, Valkey, background worker, and queue settings for local end-to-end background completion testing.
+With the Helm chart, `background=true` Responses API requests are enqueued on a Valkey stream and processed by the `duihua-background-worker` Deployment (synchronous upstream call per message, result written to Valkey). Enable `gateway.responsesApiStore.enabled=true`, `backgroundWorker.enabled=true`, and `valkey.enabled=true` (or an external response store URL). The kind workflow (`values-kind.yaml`) enables the store, Valkey, background worker, queue settings, and KEDA stream-lag autoscaling for local end-to-end background completion testing.
+
+### KEDA autoscaling for background workers (optional)
+
+When `backgroundWorker.autoscaling.enabled=true`, the chart creates a KEDA `ScaledObject` on the worker Deployment. Scaling is driven by Redis Streams consumer-group lag on `backgroundWorker.streamKey` (default `duihua:responses:background`) and `backgroundWorker.consumerGroup` (default `duihua-background`). This uses KEDA's built-in `redis-streams` scaler (KEDA core only; the HTTP add-on is not required).
+
+```yaml
+backgroundWorker:
+  autoscaling:
+    enabled: true
+    lagCount: 5
+    activationLagCount: 0
+    scaledownPeriod: 300
+    replicas:
+      min: 0   # scale-to-zero when idle (requires Valkey/Redis 7+)
+      max: 4
+```
+
+Set `replicas.min` to `1` or higher to keep at least one worker pod warm. Use `activationLagCount: 0` so the first queued job wakes a worker (KEDA activates only when lag is strictly greater than this threshold). For external Redis with TLS or auth, use a `rediss://` `responseIdStoreUrl` and/or `backgroundWorker.autoscaling.passwordFromEnv` (env var name on the worker pod). Scale-to-zero uses `lagCount` and `activationLagCount`; the bundled chart Valkey image (9.x) satisfies the Redis 7+ requirement. When autoscaling is enabled, KEDA owns replica counts, the chart omits `spec.replicas`, and `backgroundWorker.replicaCount` is ignored. With `replicas.min: 0`, a Helm hook Job bootstraps the Valkey consumer group so KEDA can observe lag before the first worker pod starts. Lag-only scaling can scale down while upstream jobs are still running; tune `scaledownPeriod` or track issue #52 for graceful drain.
 
 ## Cloud-provider independence
 
@@ -183,7 +201,7 @@ scripts/kind-local-up.sh
 
 By default, this creates a kind cluster named `duihua-local`, installs the chart into namespace `duihua`, enables the bundled CPU vLLM inference deployment, and exposes the gateway at `http://127.0.0.1:8080` via the kind port mapping in `kind/cluster.yaml`.
 
-After a local gateway or background-worker image rebuild, `scripts/build-and-load-images.sh` and `scripts/deploy-kind.sh` restart the gateway and background-worker Deployments so running pods load the new image even when Helm reuses the same image tag (default `local`). Local kind scripts that talk to the cluster (`install-keda.sh`, `deploy-kind.sh`, and the rollout restart helpers) target the same kind cluster via `KUBECTL_CONTEXT` (default `kind-${CLUSTER_NAME}`), including Helm `--kube-context`. Set `GATEWAY_ROLLOUT_RESTART=false` or `BACKGROUND_WORKER_ROLLOUT_RESTART=false` to skip automatic restarts (rollout status is still checked after deploy).
+After a local gateway or background-worker image rebuild, `scripts/build-and-load-images.sh` and `scripts/deploy-kind.sh` restart the gateway and background-worker Deployments so running pods load the new image even when Helm reuses the same image tag (default `local`). Local kind scripts that talk to the cluster (`install-keda.sh`, `deploy-kind.sh`, and the rollout restart helpers) target the same kind cluster via `KUBECTL_CONTEXT` (default `kind-${CLUSTER_NAME}`), including Helm `--kube-context`. Set `GATEWAY_ROLLOUT_RESTART=false` or `BACKGROUND_WORKER_ROLLOUT_RESTART=false` to skip automatic restarts (rollout status is still checked after deploy). If a rollout times out while the Deployment is still Available with ready pods, set `ROLLOUT_STRICT=false` (or per-deployment `GATEWAY_ROLLOUT_STRICT` / `BACKGROUND_WORKER_ROLLOUT_STRICT`) to continue; the restart helpers print deployment conditions and events on failure.
 
 ```bash
 curl http://127.0.0.1:8080/healthz

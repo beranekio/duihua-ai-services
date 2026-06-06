@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=scripts/_rollout_helpers.sh
+source "${ROOT_DIR}/scripts/_rollout_helpers.sh"
+
 RELEASE_NAME="${RELEASE_NAME:-duihua}"
 NAMESPACE="${NAMESPACE:-duihua}"
 TIMEOUT="${TIMEOUT:-300s}"
@@ -49,4 +53,8 @@ else
 fi
 
 echo "Checking rollout status for gateway deployment '${GATEWAY_DEPLOYMENT}'..."
-kubectl rollout status deployment/"${GATEWAY_DEPLOYMENT}" -n "${NAMESPACE}" --timeout="${TIMEOUT}"
+rollout_status_with_diagnostics \
+  "${GATEWAY_DEPLOYMENT}" \
+  "${NAMESPACE}" \
+  "${TIMEOUT}" \
+  "${GATEWAY_ROLLOUT_STRICT:-${ROLLOUT_STRICT:-true}}"

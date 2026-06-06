@@ -3,6 +3,14 @@ use std::collections::HashMap;
 #[cfg(test)]
 use duihua_common::parse_bool_env;
 
+pub fn init_rustls_provider() {
+    if rustls::crypto::CryptoProvider::get_default().is_none() {
+        rustls::crypto::aws_lc_rs::default_provider()
+            .install_default()
+            .expect("failed to install rustls crypto provider");
+    }
+}
+
 pub fn parse_model_upstreams(value: Option<String>) -> HashMap<String, String> {
     value
         .unwrap_or_default()

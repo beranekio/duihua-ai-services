@@ -408,6 +408,9 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "duihua-common",
+ "reqwest",
+ "rustls",
+ "serde_json",
  "tokio",
 ]
 
@@ -417,8 +420,6 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "redis",
- "reqwest",
- "rustls",
  "serde",
  "serde_json",
  "uuid",

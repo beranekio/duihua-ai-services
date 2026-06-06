@@ -10,6 +10,5 @@ mod store;
 mod upstream;
 
 pub use app::run;
-pub use duihua_common::{
-    init_rustls_provider, response_store_from_env, ResponseStore, StoredResponse,
-};
+pub use config::init_rustls_provider;
+pub use duihua_common::{response_store_from_env, ResponseStore, StoredResponse};

@@ -414,9 +414,18 @@ test_background_worker_autoscaling() {
     return 0
   fi
 
-  echo "Enqueueing background jobs to grow stream lag..."
+  local lag_count jobs_to_enqueue
+  lag_count="$(kubectl get scaledobject "${scaledobject}" -n "${NAMESPACE}" \
+    -o jsonpath='{.spec.triggers[0].metadata.lagCount}' 2>/dev/null || true)"
+  lag_count="${lag_count:-5}"
+  if [[ ! "${lag_count}" =~ ^[0-9]+$ ]] || [[ "${lag_count}" -lt 1 ]]; then
+    lag_count=5
+  fi
+  jobs_to_enqueue=$((initial_replicas * lag_count + 1))
+
+  echo "Enqueueing ${jobs_to_enqueue} background jobs to grow stream lag (lagCount=${lag_count}, replicas=${initial_replicas})..."
   local job_index
-  for job_index in 1 2 3; do
+  for job_index in $(seq 1 "${jobs_to_enqueue}"); do
     post_response "{\"model\":\"${DEFAULT_MODEL}\",\"input\":\"Autoscale lag test ${job_index}.\",\"background\":true}" >/dev/null
   done
 

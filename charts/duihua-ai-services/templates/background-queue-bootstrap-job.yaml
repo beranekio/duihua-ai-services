@@ -1,0 +1,53 @@
+{{- if eq (include "duihua.background.queueBootstrap.enabled" .) "true" }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "duihua.fullname" . }}-background-queue-bootstrap
+  annotations:
+    helm.sh/hook: post-install,post-upgrade
+    helm.sh/hook-weight: "5"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 3
+  template:
+    metadata:
+      labels:
+        app: {{ include "duihua.fullname" . }}-background-queue-bootstrap
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: bootstrap
+          {{- if .Values.valkey.enabled }}
+          image: "{{ .Values.valkey.image.repository }}:{{ .Values.valkey.image.tag }}"
+          imagePullPolicy: {{ .Values.valkey.image.pullPolicy }}
+          command:
+            - /bin/sh
+            - -ec
+            - |
+              valkey-cli -h {{ include "duihua.fullname" . }}-valkey -p {{ .Values.valkey.service.port }} \
+                XGROUP CREATE {{ include "duihua.background.streamKey" . | quote }} \
+                {{ .Values.backgroundWorker.consumerGroup | quote }} 0 MKSTREAM \
+                || true
+          {{- else }}
+          image: redis:7-alpine
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: RESPONSE_ID_STORE_URL
+              value: {{ include "duihua.responseIdStoreUrl" . | quote }}
+            - name: BACKGROUND_QUEUE_STREAM_KEY
+              value: {{ include "duihua.background.streamKey" . | quote }}
+            - name: BACKGROUND_QUEUE_CONSUMER_GROUP
+              value: {{ .Values.backgroundWorker.consumerGroup | quote }}
+          command:
+            - /bin/sh
+            - -ec
+            - |
+              cli_args="-u ${RESPONSE_ID_STORE_URL} --no-auth-warning"
+              case "${RESPONSE_ID_STORE_URL}" in
+                rediss://*) cli_args="${cli_args} --tls --insecure" ;;
+              esac
+              # shellcheck disable=SC2086
+              redis-cli ${cli_args} XGROUP CREATE "${BACKGROUND_QUEUE_STREAM_KEY}" \
+                "${BACKGROUND_QUEUE_CONSUMER_GROUP}" 0 MKSTREAM || true
+          {{- end }}
+{{- end }}

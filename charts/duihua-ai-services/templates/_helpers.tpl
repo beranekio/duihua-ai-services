@@ -120,3 +120,11 @@ true
 true
 {{- end -}}
 {{- end -}}
+
+{{- define "duihua.background.queueBootstrap.enabled" -}}
+{{- if ne (include "duihua.background.autoscaling.enabled" .) "true" -}}
+{{- else if ne (include "duihua.background.autoscaling.minReplicas" .) "0" -}}
+{{- else -}}
+true
+{{- end -}}
+{{- end -}}

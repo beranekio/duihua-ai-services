@@ -1,4 +1,4 @@
-use std::env;
+use std::{env, time::Duration};
 
 use anyhow::{Context, Result};
 use duihua_common::{
@@ -7,46 +7,27 @@ use duihua_common::{
 use reqwest::Client as HttpClient;
 use serde_json::{json, Value};
 
+struct ClaimedWork {
+    upstream: String,
+    upstream_request: Value,
+    input: Vec<Value>,
+    upstream_authorization: Option<String>,
+}
+
 pub async fn run() -> Result<()> {
     let response_id =
         env::var("BACKGROUND_RESPONSE_ID").context("BACKGROUND_RESPONSE_ID is required")?;
     let upstream_api_key = env::var("UPSTREAM_API_KEY").ok();
     let response_store = response_store_from_env().await?;
 
-    let Some(stored) = response_store.load(&response_id).await? else {
+    let Some(work) = claim_for_processing(&response_store, &response_id).await? else {
         return Ok(());
     };
-    if !should_persist(&stored) {
-        return Ok(());
-    }
 
-    let upstream_authorization = stored.upstream_authorization.clone();
-    let upstream_request = stored
-        .pending_upstream_request
-        .clone()
-        .context("background response is missing pending upstream request")?;
-    let upstream = stored.upstream.clone();
-    let input = stored.input.clone();
-
-    let Some(mut stored) = response_store.load(&response_id).await? else {
-        return Ok(());
-    };
-    if !should_persist(&stored) {
-        return Ok(());
-    }
-    if stored.pending_upstream_request.is_none() {
-        return Ok(());
-    }
-
-    stored.pending_upstream_request = None;
-    stored.response = with_response_status(&stored.response, "in_progress");
-    stored.upstream_authorization = None;
-    response_store.store(&response_id, &stored).await?;
-
-    let http = HttpClient::new();
-    let url = format!("{upstream}/responses");
-    let mut req = http.post(&url).json(&upstream_request);
-    if let Some(authorization) = upstream_authorization.as_deref() {
+    let http = upstream_http_client()?;
+    let url = format!("{}/responses", work.upstream);
+    let mut req = http.post(&url).json(&work.upstream_request);
+    if let Some(authorization) = work.upstream_authorization.as_deref() {
         req = req.header("authorization", authorization);
     } else if let Some(api_key) = upstream_api_key {
         req = req.bearer_auth(api_key);
@@ -92,9 +73,9 @@ pub async fn run() -> Result<()> {
                 &response_store,
                 &response_id,
                 StoredResponse {
-                    upstream,
+                    upstream: work.upstream,
                     response,
-                    input,
+                    input: work.input,
                     pending_upstream_request: None,
                     upstream_authorization: None,
                 },
@@ -107,6 +88,67 @@ pub async fn run() -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Load queued work and atomically transition it to `in_progress`.
+///
+/// Re-reads Valkey immediately before writing so a concurrent cancel/delete does
+/// not get overwritten. Returns `None` when the response is terminal, missing, or
+/// already claimed by another worker.
+async fn claim_for_processing(
+    response_store: &ResponseStore,
+    response_id: &str,
+) -> Result<Option<ClaimedWork>> {
+    let Some(stored) = response_store.load(response_id).await? else {
+        return Ok(None);
+    };
+    if !is_claimable(&stored) {
+        return Ok(None);
+    }
+
+    let work = ClaimedWork {
+        upstream: stored.upstream.clone(),
+        upstream_request: stored
+            .pending_upstream_request
+            .clone()
+            .context("background response is missing pending upstream request")?,
+        input: stored.input.clone(),
+        upstream_authorization: stored.upstream_authorization.clone(),
+    };
+
+    // Re-read before claiming so gateway cancel/delete wins the race.
+    let Some(mut stored) = response_store.load(response_id).await? else {
+        return Ok(None);
+    };
+    if !is_claimable(&stored) {
+        return Ok(None);
+    }
+
+    stored.pending_upstream_request = None;
+    stored.response = with_response_status(&stored.response, "in_progress");
+    stored.upstream_authorization = None;
+    response_store.store(response_id, &stored).await?;
+
+    Ok(Some(work))
+}
+
+fn is_claimable(stored: &StoredResponse) -> bool {
+    should_persist(stored) && stored.pending_upstream_request.is_some()
+}
+
+fn upstream_http_client() -> Result<HttpClient> {
+    HttpClient::builder()
+        .timeout(upstream_timeout_from_env())
+        .build()
+        .context("failed to build upstream HTTP client")
+}
+
+fn upstream_timeout_from_env() -> Duration {
+    env::var("BACKGROUND_UPSTREAM_TIMEOUT_SECONDS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .map(Duration::from_secs)
+        .unwrap_or(Duration::from_secs(600))
 }
 
 fn should_persist(stored: &StoredResponse) -> bool {
@@ -190,5 +232,39 @@ mod tests {
             upstream_authorization: None,
         };
         assert!(!should_persist(&deleted));
+    }
+
+    #[test]
+    fn claimable_requires_pending_upstream_request() {
+        let queued = StoredResponse {
+            upstream: "http://model".to_string(),
+            response: json!({"status": "queued", "background": true}),
+            input: vec![],
+            pending_upstream_request: Some(json!({"input": "hi"})),
+            upstream_authorization: None,
+        };
+        assert!(is_claimable(&queued));
+
+        let in_progress = StoredResponse {
+            upstream: "http://model".to_string(),
+            response: json!({"status": "in_progress", "background": true}),
+            input: vec![],
+            pending_upstream_request: None,
+            upstream_authorization: None,
+        };
+        assert!(!is_claimable(&in_progress));
+    }
+
+    #[test]
+    fn defaults_upstream_timeout_to_ten_minutes() {
+        env::remove_var("BACKGROUND_UPSTREAM_TIMEOUT_SECONDS");
+        assert_eq!(upstream_timeout_from_env(), Duration::from_secs(600));
+    }
+
+    #[test]
+    fn reads_upstream_timeout_from_env() {
+        env::set_var("BACKGROUND_UPSTREAM_TIMEOUT_SECONDS", "120");
+        assert_eq!(upstream_timeout_from_env(), Duration::from_secs(120));
+        env::remove_var("BACKGROUND_UPSTREAM_TIMEOUT_SECONDS");
     }
 }

@@ -12,8 +12,10 @@ spec:
       labels:
         app: {{ include "duihua.fullname" . }}-gateway
     spec:
-      {{- if eq (include "duihua.backgroundJobs.enabled" .) "true" }}
+      {{- if .Values.serviceAccount.create }}
       serviceAccountName: {{ include "duihua.serviceAccountName" . }}
+      {{- else if .Values.serviceAccount.name }}
+      serviceAccountName: {{ .Values.serviceAccount.name | quote }}
       {{- end }}
       containers:
         - name: gateway
@@ -48,23 +50,13 @@ spec:
               value: {{ .Values.gateway.env.responseIdStoreKeyPrefix | quote }}
             - name: RESPONSE_ID_STORE_TTL_SECONDS
               value: {{ .Values.gateway.env.responseIdStoreTtlSeconds | quote }}
-            {{- if eq (include "duihua.backgroundJobs.enabled" .) "true" }}
-            - name: RESPONSES_BACKGROUND_JOBS_ENABLED
+            {{- if eq (include "duihua.background.enabled" .) "true" }}
+            - name: RESPONSES_BACKGROUND_ENABLED
               value: "true"
-            - name: BACKGROUND_JOB_IMAGE
-              value: "{{ .Values.backgroundWorker.image.repository }}:{{ .Values.backgroundWorker.image.tag }}"
-            - name: BACKGROUND_JOB_IMAGE_PULL_POLICY
-              value: {{ .Values.backgroundWorker.image.pullPolicy | quote }}
-            - name: BACKGROUND_JOB_SERVICE_ACCOUNT_NAME
-              value: {{ include "duihua.serviceAccountName" . | quote }}
-            - name: BACKGROUND_JOB_TTL_SECONDS_AFTER_FINISHED
-              value: {{ .Values.gateway.responsesApiStore.backgroundJobs.ttlSecondsAfterFinished | quote }}
-            - name: BACKGROUND_JOB_RESOURCES_JSON
-              value: {{ include "duihua.backgroundJob.resources" . | quote }}
-            - name: POD_NAMESPACE
-              valueFrom:
-                fieldRef:
-                  fieldPath: metadata.namespace
+            - name: BACKGROUND_QUEUE_STREAM_KEY
+              value: {{ .Values.gateway.responsesApiStore.backgroundJobs.streamKey | quote }}
+            - name: BACKGROUND_RESPONSE_STALE_SECONDS
+              value: {{ .Values.gateway.responsesApiStore.backgroundJobs.staleSeconds | quote }}
             {{- end }}
             - name: MODEL_UPSTREAMS
               {{ if .Values.inference.enabled }}

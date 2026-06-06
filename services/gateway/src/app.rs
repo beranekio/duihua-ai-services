@@ -6,9 +6,8 @@ use reqwest::Client;
 use tracing::info;
 
 use crate::{
-    background,
     config::{init_rustls_provider, parse_model_upstreams},
-    routes,
+    queue, routes,
     state::AppState,
 };
 
@@ -30,8 +29,8 @@ pub async fn run() -> Result<()> {
     } else {
         None
     };
-    let background_jobs = if responses_api_store_enabled {
-        background::background_jobs_from_env().await?
+    let background_queue = if responses_api_store_enabled {
+        queue::background_queue_from_env().await?
     } else {
         None
     };
@@ -44,7 +43,7 @@ pub async fn run() -> Result<()> {
         client: Client::new(),
         responses_api_store_enabled,
         response_store,
-        background_jobs,
+        background_queue,
     });
 
     let app = routes::router(state);

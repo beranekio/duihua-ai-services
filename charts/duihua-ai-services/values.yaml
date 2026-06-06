@@ -26,16 +26,14 @@ gateway:
     # inference deployments may use multiple replicas and scale to zero.
     enabled: false
     backgroundJobs:
-      # Run background=true Responses API requests as Kubernetes Jobs that call
-      # upstream inference synchronously and persist the completed response in Valkey.
+      # Enqueue background=true Responses API requests on a Valkey stream for the
+      # background-worker Deployment to process (#44/#45).
       enabled: true
-      ttlSecondsAfterFinished: 600
-      # Defaults to gateway.resources when unset.
-      resources: {}
+      streamKey: duihua:responses:background
+      staleSeconds: 3600
 
 backgroundWorker:
-  # Separate image for background Responses API Jobs.
-  # The gateway deployment still uses gateway.image; only Jobs use the worker image.
+  # Image for the background-worker Deployment that consumes the Valkey stream (#45).
   image:
     repository: ghcr.io/example/duihua-background-worker
     tag: "0.1.0"

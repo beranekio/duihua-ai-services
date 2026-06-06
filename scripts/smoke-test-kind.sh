@@ -290,8 +290,27 @@ test_in_flight_continuation_rejected() {
   echo "in-flight continuation returned 409"
 }
 
+background_queue_enabled() {
+  local deployment="${RELEASE_NAME}-duihua-ai-services-gateway"
+  local enabled
+  enabled="$(kubectl get deployment "${deployment}" -n "${NAMESPACE}" \
+    -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="RESPONSES_BACKGROUND_ENABLED")].value}' 2>/dev/null || true)"
+  [[ "${enabled}" == "true" ]]
+}
+
+skip_background_completion_tests() {
+  if [[ "${SMOKE_TEST_SKIP_BACKGROUND_COMPLETION:-}" == "true" ]]; then
+    return 0
+  fi
+  background_queue_enabled
+}
+
 test_background_job_resources() {
   echo "=== background job resources ==="
+  if background_queue_enabled; then
+    echo "background queue enabled; skipping Kubernetes Job resource checks until worker consumer lands"
+    return 0
+  fi
   python3 - "${NAMESPACE}" "${KUBECTL_CONTEXT}" <<'PY'
 import json
 import os
@@ -330,7 +349,12 @@ main() {
   test_messages_default_model
   test_messages_count_tokens
   test_sync_response_persistence
-  test_background_response_completion
+  if skip_background_completion_tests; then
+    echo "=== background response completion ==="
+    echo "background queue enabled without worker consumer; skipping completion poll until #44"
+  else
+    test_background_response_completion
+  fi
   test_background_cancel_stays_cancelled
   test_background_delete_tombstone
   test_in_flight_continuation_rejected

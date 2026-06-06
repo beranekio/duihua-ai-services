@@ -26,14 +26,16 @@ pub async fn load_stored_response(
             if background::stored_response_status(&response) == Some("deleted") {
                 return Err(response_not_found(response_id));
             }
-            let response = if let Some(background_jobs) = &state.background_jobs {
-                match background_jobs
-                    .reconcile_failed_response(response_store, response_id, &response)
+            let response = if let Some(background_queue) = &state.background_queue {
+                match background_queue
+                    .reconcile_stale_response(response_store, response_id, &response)
                     .await
                 {
                     Ok(response) => response,
                     Err(e) => {
-                        error!("failed to reconcile background job status for {response_id}: {e}");
+                        error!(
+                            "failed to reconcile stale background response for {response_id}: {e}"
+                        );
                         response
                     }
                 }

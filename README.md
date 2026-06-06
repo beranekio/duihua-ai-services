@@ -98,7 +98,7 @@ To use an external Valkey/Redis-compatible service instead, keep `valkey.enabled
 
 For local Docker Compose, set `RESPONSES_API_STORE_ENABLED=true` when starting the stack to exercise persisted follow-up Responses API calls. Streaming responses are persisted after their `response.completed` event.
 
-With the Helm chart, `background=true` Responses API requests are executed asynchronously by Kubernetes Jobs that run the dedicated `duihua-background-worker` image (synchronous upstream call, result written to Valkey). Enable both `gateway.responsesApiStore.enabled=true` and `valkey.enabled=true` (or an external response store URL). Background jobs are on by default when the store is enabled (`gateway.responsesApiStore.backgroundJobs.enabled`). The kind workflow (`values-kind.yaml`) enables the store, Valkey, and background jobs for local testing.
+With the Helm chart, `background=true` Responses API requests are enqueued on a Valkey stream and processed by the `duihua-background-worker` Deployment (synchronous upstream call per message, result written to Valkey). Enable both `gateway.responsesApiStore.enabled=true` and `valkey.enabled=true` (or an external response store URL). Background queue enqueue is on by default when the store is enabled (`gateway.responsesApiStore.backgroundJobs.enabled`). The kind workflow (`values-kind.yaml`) enables the store, Valkey, and background queue settings for local testing; end-to-end background completion requires the stream consumer Deployment (#44/#45).
 
 ## Cloud-provider independence
 

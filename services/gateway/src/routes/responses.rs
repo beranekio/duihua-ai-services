@@ -248,17 +248,6 @@ pub async fn cancel_response(
             .into_response();
     }
 
-    if let Some(background_jobs) = &state.background_jobs {
-        if let Err(e) = background_jobs.cancel(&response_id).await {
-            error!("failed to cancel background job for {response_id}: {e}");
-            return (
-                StatusCode::BAD_GATEWAY,
-                "failed to cancel background response job",
-            )
-                .into_response();
-        }
-    }
-
     let cancelled = background::build_cancelled_response(&stored, &response_id);
     stored.response = cancelled.clone();
     stored.pending_upstream_request = None;

@@ -97,7 +97,7 @@ pub async fn process_response(
                 return Ok(ProcessOutcome::Ack);
             }
 
-            let Ok(mut response) = serde_json::from_slice::<Value>(&body) else {
+            let Ok(response) = serde_json::from_slice::<Value>(&body) else {
                 mark_failed(
                     response_store,
                     response_id,
@@ -106,11 +106,13 @@ pub async fn process_response(
                 .await?;
                 return Ok(ProcessOutcome::Ack);
             };
-            response["id"] = Value::String(response_id.to_string());
-            response["background"] = Value::Bool(true);
-            if response.get("status").is_none() {
-                response["status"] = Value::String("completed".to_string());
-            }
+            let response = match enrich_upstream_completion_response(response, response_id) {
+                Ok(response) => response,
+                Err(message) => {
+                    mark_failed(response_store, response_id, message).await?;
+                    return Ok(ProcessOutcome::Ack);
+                }
+            };
 
             store_completion(
                 response_store,
@@ -245,6 +247,21 @@ fn upstream_http_client() -> Result<HttpClient> {
         .timeout(upstream_timeout_from_env())
         .build()
         .context("failed to build upstream HTTP client")
+}
+
+fn enrich_upstream_completion_response(
+    mut response: Value,
+    response_id: &str,
+) -> Result<Value, &'static str> {
+    if !response.is_object() {
+        return Err("upstream returned JSON that is not an object");
+    }
+    response["id"] = Value::String(response_id.to_string());
+    response["background"] = Value::Bool(true);
+    if response.get("status").is_none() {
+        response["status"] = Value::String("completed".to_string());
+    }
+    Ok(response)
 }
 
 fn upstream_timeout_from_env() -> Duration {
@@ -483,6 +500,21 @@ mod tests {
         let merged = merge_completion(&current, completion);
         assert_eq!(merged.enqueued_at, Some(1_746_500_000));
         assert_eq!(stored_response_status(&merged), Some("completed"));
+    }
+
+    #[test]
+    fn enrich_upstream_response_rejects_non_object_json() {
+        assert!(enrich_upstream_completion_response(json!([]), "resp_x").is_err());
+        assert!(enrich_upstream_completion_response(json!("ok"), "resp_x").is_err());
+    }
+
+    #[test]
+    fn enrich_upstream_response_adds_defaults() {
+        let enriched =
+            enrich_upstream_completion_response(json!({"object": "response"}), "resp_x").unwrap();
+        assert_eq!(enriched["id"], "resp_x");
+        assert_eq!(enriched["background"], true);
+        assert_eq!(enriched["status"], "completed");
     }
 
     #[test]

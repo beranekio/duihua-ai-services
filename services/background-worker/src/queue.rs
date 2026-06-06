@@ -312,12 +312,17 @@ async fn load_queue_message(
     Ok(Some(message))
 }
 
-fn consumer_name_from_env() -> String {
-    if let Ok(name) = env::var("BACKGROUND_QUEUE_CONSUMER_NAME") {
-        return name;
+fn resolve_consumer_name(explicit: Option<&str>, host: &str, pid: u32) -> String {
+    if let Some(name) = explicit {
+        return name.to_string();
     }
+    format!("{host}-{pid}")
+}
+
+fn consumer_name_from_env() -> String {
+    let explicit = env::var("BACKGROUND_QUEUE_CONSUMER_NAME").ok();
     let host = env::var("HOSTNAME").unwrap_or_else(|_| "duihua-background-worker".to_string());
-    format!("{}-{}", host, std::process::id())
+    resolve_consumer_name(explicit.as_deref(), &host, std::process::id())
 }
 
 async fn drain_pending_at_startup(
@@ -688,16 +693,15 @@ mod tests {
 
     #[test]
     fn consumer_name_defaults_include_process_id() {
-        env::remove_var("BACKGROUND_QUEUE_CONSUMER_NAME");
-        let name = consumer_name_from_env();
-        assert!(name.ends_with(&format!("-{}", std::process::id())));
+        assert_eq!(resolve_consumer_name(None, "pod-1", 4242), "pod-1-4242");
     }
 
     #[test]
     fn consumer_name_honors_explicit_override() {
-        env::set_var("BACKGROUND_QUEUE_CONSUMER_NAME", "worker-a");
-        assert_eq!(consumer_name_from_env(), "worker-a");
-        env::remove_var("BACKGROUND_QUEUE_CONSUMER_NAME");
+        assert_eq!(
+            resolve_consumer_name(Some("worker-a"), "pod-1", 1),
+            "worker-a"
+        );
     }
 
     #[test]

@@ -6,6 +6,8 @@ Guidance for human and AI contributors working in this repository.
 - This repo provides a Kubernetes-first, OpenAI API-compatible serving stack.
 - Main components:
   - `services/gateway` (Rust/Axum API gateway)
+  - `services/background-worker` (lean Rust worker for background Responses API Jobs)
+  - `services/common` (shared Rust library for gateway and background worker)
   - `charts/duihua-ai-services` (Helm chart)
   - `scripts/` (local kind + deployment helpers)
   - `docs/` (operations notes)
@@ -59,16 +61,18 @@ If Docker, kind, cluster access, or sufficient resources are unavailable, still 
 
 Run checks that match the files you changed. Gateway and chart edits need both unit/static checks **and** the kind smoke test above when possible.
 
-### Rust gateway (run from `services/gateway`)
+### Rust workspace (run from `services/`)
 
-There is no root-level `Cargo.toml`; run these from `services/gateway`:
+The gateway and background worker share a Cargo workspace under `services/`.
 
 ```bash
-cd services/gateway
+cd services
 cargo fmt --all --check
 cargo clippy --all-targets --all-features -- -D warnings
 cargo test
 ```
+
+Individual crates may be targeted with `-p duihua-gateway`, `-p duihua-background-worker`, or `-p duihua-common`.
 
 ### Helm chart (`charts/duihua-ai-services`)
 - `helm lint charts/duihua-ai-services`

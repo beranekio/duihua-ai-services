@@ -1,7 +1,8 @@
 services:
   gateway:
     build:
-      context: ./services/gateway
+      context: ./services
+      dockerfile: gateway/Dockerfile
     environment:
       BIND_ADDR: 0.0.0.0:8080
       UPSTREAM_BASE_URL: http://vllm:8000/v1

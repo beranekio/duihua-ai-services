@@ -403,15 +403,37 @@ dependencies = [
 ]
 
 [[package]]
+name = "duihua-background-worker"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "duihua-common",
+ "tokio",
+]
+
+[[package]]
+name = "duihua-common"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "redis",
+ "reqwest",
+ "rustls",
+ "serde",
+ "serde_json",
+ "uuid",
+]
+
+[[package]]
 name = "duihua-gateway"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "axum",
+ "duihua-common",
  "futures-util",
  "k8s-openapi",
  "kube",
- "redis",
  "reqwest",
  "rustls",
  "serde",
@@ -420,7 +442,6 @@ dependencies = [
  "tower-http",
  "tracing",
  "tracing-subscriber",
- "uuid",
 ]
 
 [[package]]

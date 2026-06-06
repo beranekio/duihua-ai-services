@@ -1,0 +1,13 @@
+[package]
+name = "duihua-background-worker"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "duihua-background-worker"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+duihua-common = { path = "../common" }
+tokio = { version = "1", features = ["full"] }

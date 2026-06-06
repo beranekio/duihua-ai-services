@@ -15,7 +15,7 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: services/gateway
+        working-directory: services
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -26,8 +26,8 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            services/gateway/target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('services/gateway/Cargo.lock') }}
+            services/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('services/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-
 
@@ -56,6 +56,11 @@ jobs:
         uses: hadolint/hadolint-action@v3.3.0
         with:
           dockerfile: services/gateway/Dockerfile
+
+      - name: Lint background worker Dockerfile
+        uses: hadolint/hadolint-action@v3.3.0
+        with:
+          dockerfile: services/background-worker/Dockerfile
 
   helm:
     name: Helm chart validation

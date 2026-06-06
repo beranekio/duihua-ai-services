@@ -1,8 +1,9 @@
 use std::collections::HashMap;
 
+use duihua_common::ResponseStore;
 use reqwest::Client;
 
-use crate::{background::BackgroundJobs, store::ResponseStore};
+use crate::background::BackgroundJobs;
 
 pub struct AppState {
     pub upstream_base: String,

@@ -13,6 +13,11 @@ spec:
       labels:
         app: {{ include "duihua.fullname" . }}-background-worker
     spec:
+      {{- if .Values.serviceAccount.create }}
+      serviceAccountName: {{ include "duihua.serviceAccountName" . }}
+      {{- else if .Values.serviceAccount.name }}
+      serviceAccountName: {{ .Values.serviceAccount.name | quote }}
+      {{- end }}
       containers:
         - name: background-worker
           image: "{{ .Values.backgroundWorker.image.repository }}:{{ .Values.backgroundWorker.image.tag }}"

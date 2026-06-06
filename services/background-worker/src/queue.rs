@@ -66,13 +66,7 @@ impl QueueConfig {
         if autoclaim_batch_size == 0 {
             bail!("BACKGROUND_QUEUE_AUTOCLAIM_BATCH_SIZE must be greater than 0");
         }
-        let max_concurrent_jobs = env::var("BACKGROUND_QUEUE_MAX_CONCURRENT_JOBS")
-            .ok()
-            .and_then(|value| value.parse().ok())
-            .unwrap_or(1);
-        if max_concurrent_jobs == 0 {
-            bail!("BACKGROUND_QUEUE_MAX_CONCURRENT_JOBS must be greater than 0");
-        }
+        let max_concurrent_jobs = max_concurrent_jobs_from_env()?;
 
         Ok(Self {
             redis_url,
@@ -366,6 +360,22 @@ fn resolve_consumer_name(explicit: Option<&str>, host: &str, pid: u32) -> String
         return name.to_string();
     }
     format!("{host}-{pid}")
+}
+
+fn max_concurrent_jobs_from_env() -> Result<usize> {
+    max_concurrent_jobs_from_env_value(
+        env::var("BACKGROUND_QUEUE_MAX_CONCURRENT_JOBS")
+            .ok()
+            .as_deref(),
+    )
+}
+
+fn max_concurrent_jobs_from_env_value(explicit: Option<&str>) -> Result<usize> {
+    let max_concurrent_jobs = explicit.and_then(|value| value.parse().ok()).unwrap_or(1);
+    if max_concurrent_jobs == 0 {
+        bail!("BACKGROUND_QUEUE_MAX_CONCURRENT_JOBS must be greater than 0");
+    }
+    Ok(max_concurrent_jobs)
 }
 
 fn consumer_name_from_env() -> String {
@@ -817,16 +827,10 @@ mod tests {
     }
 
     #[test]
-    fn rejects_zero_max_concurrent_jobs() {
-        env::set_var("BACKGROUND_QUEUE_MAX_CONCURRENT_JOBS", "0");
-        assert!(QueueConfig::from_env().is_err());
-        env::remove_var("BACKGROUND_QUEUE_MAX_CONCURRENT_JOBS");
-    }
-
-    #[test]
-    fn default_max_concurrent_jobs_is_one() {
-        env::remove_var("BACKGROUND_QUEUE_MAX_CONCURRENT_JOBS");
-        assert_eq!(QueueConfig::from_env().unwrap().max_concurrent_jobs, 1);
+    fn max_concurrent_jobs_defaults_and_rejects_zero() {
+        assert_eq!(max_concurrent_jobs_from_env_value(None).unwrap(), 1);
+        assert!(max_concurrent_jobs_from_env_value(Some("0")).is_err());
+        assert_eq!(max_concurrent_jobs_from_env_value(Some("4")).unwrap(), 4);
     }
 
     #[test]

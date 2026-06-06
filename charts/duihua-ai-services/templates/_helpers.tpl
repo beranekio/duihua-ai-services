@@ -44,18 +44,18 @@ true
 {{- end -}}
 
 {{- define "duihua.background.streamKey" -}}
-{{- $legacyStreamKey := dig "backgroundJobs" "streamKey" "" .Values.gateway.responsesApiStore -}}
-{{- if $legacyStreamKey -}}
-{{- $legacyStreamKey -}}
+{{- $backgroundJobs := get .Values.gateway.responsesApiStore "backgroundJobs" | default dict -}}
+{{- if hasKey $backgroundJobs "streamKey" -}}
+{{- get $backgroundJobs "streamKey" -}}
 {{- else -}}
 {{- .Values.backgroundWorker.streamKey -}}
 {{- end -}}
 {{- end -}}
 
 {{- define "duihua.background.staleSeconds" -}}
-{{- $legacyStaleSeconds := dig "backgroundJobs" "staleSeconds" "" .Values.gateway.responsesApiStore -}}
-{{- if $legacyStaleSeconds -}}
-{{- $legacyStaleSeconds -}}
+{{- $backgroundJobs := get .Values.gateway.responsesApiStore "backgroundJobs" | default dict -}}
+{{- if hasKey $backgroundJobs "staleSeconds" -}}
+{{- get $backgroundJobs "staleSeconds" -}}
 {{- else -}}
 {{- .Values.backgroundWorker.staleSeconds -}}
 {{- end -}}

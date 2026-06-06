@@ -84,6 +84,9 @@ impl QueueConfig {
 
 pub async fn run() -> Result<()> {
     let config = QueueConfig::from_env()?;
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    spawn_shutdown_listener(shutdown_tx);
+
     let response_store = response_store_from_env().await?;
     let mut connection = connect_queue(&config).await?;
 
@@ -93,8 +96,6 @@ pub async fn run() -> Result<()> {
         recommended_termination_grace_period_seconds_for_config(&config)
     );
     let job_concurrency = Arc::new(Semaphore::new(config.max_concurrent_jobs));
-    let (shutdown_tx, shutdown_rx) = watch::channel(false);
-    spawn_shutdown_listener(shutdown_tx);
     drain_pending_at_startup(
         &mut connection,
         &config,
@@ -255,30 +256,30 @@ fn shutdown_triggered(shutdown_rx: &watch::Receiver<bool>) -> bool {
 }
 
 fn spawn_shutdown_listener(shutdown_tx: watch::Sender<bool>) {
-    tokio::spawn(async move {
-        wait_for_shutdown_signal().await;
-        eprintln!("background worker shutdown signal received; stopping new queue reads");
-        let _ = shutdown_tx.send(true);
-    });
-}
-
-async fn wait_for_shutdown_signal() {
     #[cfg(unix)]
     {
         use tokio::signal::unix::{signal, SignalKind};
         let mut sigterm =
             signal(SignalKind::terminate()).expect("failed to install SIGTERM handler");
         let mut sigint = signal(SignalKind::interrupt()).expect("failed to install SIGINT handler");
-        tokio::select! {
-            _ = sigterm.recv() => {}
-            _ = sigint.recv() => {}
-        }
+        tokio::spawn(async move {
+            tokio::select! {
+                _ = sigterm.recv() => {}
+                _ = sigint.recv() => {}
+            }
+            eprintln!("background worker shutdown signal received; stopping new queue reads");
+            let _ = shutdown_tx.send(true);
+        });
     }
     #[cfg(not(unix))]
     {
-        tokio::signal::ctrl_c()
-            .await
-            .expect("failed to install Ctrl+C handler");
+        tokio::spawn(async move {
+            tokio::signal::ctrl_c()
+                .await
+                .expect("failed to install Ctrl+C handler");
+            eprintln!("background worker shutdown signal received; stopping new queue reads");
+            let _ = shutdown_tx.send(true);
+        });
     }
 }
 

@@ -1,14 +1,17 @@
-use std::env;
+use std::{env, time::Duration};
 
 use anyhow::{Context, Result};
 use duihua_common::response_store_from_env;
 use redis::{
     aio::MultiplexedConnection,
-    streams::{StreamAutoClaimOptions, StreamAutoClaimReply, StreamId, StreamReadOptions},
+    streams::{
+        StreamAutoClaimOptions, StreamAutoClaimReply, StreamDeletionPolicy, StreamId,
+        StreamReadOptions,
+    },
     AsyncCommands, RedisError,
 };
 
-use crate::worker;
+use crate::worker::{self, ProcessOutcome};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct QueueMessage {
@@ -73,10 +76,12 @@ pub async fn run() -> Result<()> {
         .with_context(|| "failed to connect to background queue")?;
 
     ensure_consumer_group(&mut connection, &config).await?;
+    drain_pending_at_startup(&mut connection, &config, &response_store).await;
+
     let mut autoclaim_cursor = "0-0".to_string();
 
     loop {
-        let autoclaim: StreamAutoClaimReply = connection
+        let autoclaim_result: Result<StreamAutoClaimReply, RedisError> = connection
             .xautoclaim_options(
                 &config.stream_key,
                 &config.consumer_group,
@@ -85,21 +90,22 @@ pub async fn run() -> Result<()> {
                 &autoclaim_cursor,
                 StreamAutoClaimOptions::default().count(config.autoclaim_batch_size),
             )
-            .await?;
-        autoclaim_cursor = autoclaim.next_stream_id;
-        for message in messages_from_stream_ids(&autoclaim.claimed) {
-            handle_message(&mut connection, &config, &response_store, message).await?;
-        }
-
-        let pending_opts = StreamReadOptions::default()
-            .group(&config.consumer_group, &config.consumer_name)
-            .count(config.autoclaim_batch_size);
-        if let Some(reply) = connection
-            .xread_options(&[&config.stream_key], &["0"], &pending_opts)
-            .await?
-        {
-            for message in messages_from_read_reply(&reply) {
-                handle_message(&mut connection, &config, &response_store, message).await?;
+            .await;
+        match autoclaim_result {
+            Ok(autoclaim) => {
+                autoclaim_cursor = autoclaim.next_stream_id;
+                process_stream_entries(
+                    &mut connection,
+                    &config,
+                    &response_store,
+                    &autoclaim.claimed,
+                )
+                .await;
+            }
+            Err(err) => {
+                eprintln!("failed to auto-claim background queue messages: {err:?}");
+                sleep_on_redis_error().await;
+                continue;
             }
         }
 
@@ -107,15 +113,106 @@ pub async fn run() -> Result<()> {
             .group(&config.consumer_group, &config.consumer_name)
             .block(config.block_ms)
             .count(1);
-        if let Some(reply) = connection
+        let read_result: Result<Option<redis::streams::StreamReadReply>, RedisError> = connection
             .xread_options(&[&config.stream_key], &[">"], &new_opts)
-            .await?
-        {
-            for message in messages_from_read_reply(&reply) {
-                handle_message(&mut connection, &config, &response_store, message).await?;
+            .await;
+        match read_result {
+            Ok(Some(reply)) => {
+                let entries: Vec<StreamId> = reply
+                    .keys
+                    .iter()
+                    .flat_map(|key| key.ids.iter().cloned())
+                    .collect();
+                process_stream_entries(&mut connection, &config, &response_store, &entries).await;
+            }
+            Ok(None) => {}
+            Err(err) => {
+                eprintln!("failed to read new background queue messages: {err:?}");
+                sleep_on_redis_error().await;
             }
         }
     }
+}
+
+async fn drain_pending_at_startup(
+    connection: &mut MultiplexedConnection,
+    config: &QueueConfig,
+    response_store: &duihua_common::ResponseStore,
+) {
+    let pending_opts = StreamReadOptions::default()
+        .group(&config.consumer_group, &config.consumer_name)
+        .count(config.autoclaim_batch_size);
+
+    loop {
+        let reply: Option<redis::streams::StreamReadReply> = match connection
+            .xread_options(&[&config.stream_key], &["0"], &pending_opts)
+            .await
+        {
+            Ok(reply) => reply,
+            Err(err) => {
+                eprintln!("failed to drain pending background queue messages at startup: {err:?}");
+                sleep_on_redis_error().await;
+                continue;
+            }
+        };
+
+        let Some(reply) = reply else {
+            break;
+        };
+
+        let entries: Vec<StreamId> = reply
+            .keys
+            .iter()
+            .flat_map(|key| key.ids.iter().cloned())
+            .collect();
+        if entries.is_empty() {
+            break;
+        }
+
+        if process_stream_entries(connection, config, response_store, &entries)
+            .await
+            .stopped_on_retry
+        {
+            break;
+        }
+    }
+}
+
+struct ProcessBatchOutcome {
+    stopped_on_retry: bool,
+}
+
+async fn process_stream_entries(
+    connection: &mut MultiplexedConnection,
+    config: &QueueConfig,
+    response_store: &duihua_common::ResponseStore,
+    entries: &[StreamId],
+) -> ProcessBatchOutcome {
+    let (messages, invalid_ids) = split_stream_entries(entries);
+    let mut stopped_on_retry = false;
+
+    for stream_id in invalid_ids {
+        eprintln!("acknowledging malformed background queue entry {stream_id}");
+        if let Err(err) = acknowledge_message(connection, config, &stream_id).await {
+            eprintln!("failed to acknowledge malformed entry {stream_id}: {err:?}");
+        }
+    }
+
+    for message in messages {
+        let response_id = message.response_id.clone();
+        match handle_message(connection, config, response_store, message).await {
+            Ok(()) => {}
+            Err(err) => {
+                eprintln!("failed to process background queue message {response_id}: {err:?}");
+                if err.downcast_ref::<RetryableMessageError>().is_some() {
+                    stopped_on_retry = true;
+                    break;
+                }
+            }
+        }
+    }
+
+    ProcessBatchOutcome { stopped_on_retry }
 }
 
 async fn ensure_consumer_group(
@@ -132,24 +229,63 @@ async fn ensure_consumer_group(
     }
 }
 
+#[derive(Debug)]
+struct RetryableMessageError;
+
+impl std::fmt::Display for RetryableMessageError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("background queue message will be retried")
+    }
+}
+
+impl std::error::Error for RetryableMessageError {}
+
 async fn handle_message(
     connection: &mut MultiplexedConnection,
     config: &QueueConfig,
     response_store: &duihua_common::ResponseStore,
     message: QueueMessage,
 ) -> Result<()> {
-    worker::process_response(response_store, &message.response_id).await?;
-    let _: usize = connection
-        .xack(
+    match worker::process_response(response_store, &message.response_id).await? {
+        ProcessOutcome::Ack => {
+            acknowledge_message(connection, config, &message.stream_id).await?;
+        }
+        ProcessOutcome::Retry => {
+            return Err(RetryableMessageError.into());
+        }
+    }
+    Ok(())
+}
+
+async fn acknowledge_message(
+    connection: &mut MultiplexedConnection,
+    config: &QueueConfig,
+    stream_id: &str,
+) -> Result<()> {
+    let ids = [stream_id];
+    match connection
+        .xack_del::<_, _, _, Vec<redis::streams::XAckDelStatusCode>>(
             &config.stream_key,
             &config.consumer_group,
-            &[message.stream_id.as_str()],
+            &ids,
+            StreamDeletionPolicy::Acked,
         )
-        .await?;
-    let _: usize = connection
-        .xdel(&config.stream_key, &[message.stream_id.as_str()])
-        .await?;
-    Ok(())
+        .await
+    {
+        Ok(_) => Ok(()),
+        Err(err) if is_unsupported_xackdel(&err) => {
+            let _: usize = connection
+                .xack(&config.stream_key, &config.consumer_group, &ids)
+                .await?;
+            let _: usize = connection.xdel(&config.stream_key, &ids).await?;
+            Ok(())
+        }
+        Err(err) => Err(err).context("failed to acknowledge background queue message"),
+    }
+}
+
+async fn sleep_on_redis_error() {
+    tokio::time::sleep(Duration::from_secs(1)).await;
 }
 
 pub fn response_id_from_stream_entry(entry: &StreamId) -> Option<String> {
@@ -163,24 +299,27 @@ pub fn queue_message_from_stream_entry(entry: &StreamId) -> Option<QueueMessage>
     })
 }
 
-pub fn messages_from_stream_ids(entries: &[StreamId]) -> Vec<QueueMessage> {
-    entries
-        .iter()
-        .filter_map(queue_message_from_stream_entry)
-        .collect()
-}
-
-pub fn messages_from_read_reply(reply: &redis::streams::StreamReadReply) -> Vec<QueueMessage> {
-    reply
-        .keys
-        .iter()
-        .flat_map(|key| key.ids.iter())
-        .filter_map(queue_message_from_stream_entry)
-        .collect()
+pub fn split_stream_entries(entries: &[StreamId]) -> (Vec<QueueMessage>, Vec<String>) {
+    let mut messages = Vec::new();
+    let mut invalid_ids = Vec::new();
+    for entry in entries {
+        if let Some(message) = queue_message_from_stream_entry(entry) {
+            messages.push(message);
+        } else {
+            invalid_ids.push(entry.id.clone());
+        }
+    }
+    (messages, invalid_ids)
 }
 
 fn is_busygroup(err: &RedisError) -> bool {
     err.code() == Some("BUSYGROUP")
+}
+
+fn is_unsupported_xackdel(err: &RedisError) -> bool {
+    err.to_string()
+        .to_ascii_lowercase()
+        .contains("unknown command")
 }
 
 #[cfg(test)]
@@ -216,15 +355,27 @@ mod tests {
     }
 
     #[test]
-    fn ignores_stream_entries_without_response_id() {
-        let entry = StreamId {
+    fn splits_invalid_stream_entries_for_explicit_ack() {
+        let valid = StreamId {
             id: "1717670000000-0".to_string(),
+            map: [(
+                "response_id".to_string(),
+                Value::BulkString(b"resp_abc".to_vec()),
+            )]
+            .into(),
+            milliseconds_elapsed_from_delivery: None,
+            delivered_count: None,
+        };
+        let invalid = StreamId {
+            id: "1717670000001-0".to_string(),
             map: [("other".to_string(), Value::BulkString(b"x".to_vec()))].into(),
             milliseconds_elapsed_from_delivery: None,
             delivered_count: None,
         };
 
-        assert!(queue_message_from_stream_entry(&entry).is_none());
+        let (messages, invalid_ids) = split_stream_entries(&[valid, invalid]);
+        assert_eq!(messages.len(), 1);
+        assert_eq!(invalid_ids, vec!["1717670000001-0".to_string()]);
     }
 
     #[test]
@@ -240,8 +391,13 @@ mod tests {
             ])]),
         ])]);
         let reply = redis::streams::StreamReadReply::from_redis_value(value).expect("reply");
+        let entries: Vec<StreamId> = reply
+            .keys
+            .iter()
+            .flat_map(|key| key.ids.iter().cloned())
+            .collect();
         assert_eq!(
-            messages_from_read_reply(&reply),
+            split_stream_entries(&entries).0,
             vec![QueueMessage {
                 stream_id: "1717670000000-0".to_string(),
                 response_id: "resp_xyz".to_string(),

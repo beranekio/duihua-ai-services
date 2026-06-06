@@ -12,11 +12,39 @@ struct ClaimedWork {
     upstream_authorization: Option<String>,
 }
 
-pub async fn process_response(response_store: &ResponseStore, response_id: &str) -> Result<()> {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProcessOutcome {
+    /// The stream entry can be acknowledged and removed.
+    Ack,
+    /// Leave the entry pending for redelivery.
+    Retry,
+}
+
+pub async fn process_response(
+    response_store: &ResponseStore,
+    response_id: &str,
+) -> Result<ProcessOutcome> {
     let upstream_api_key = env::var("UPSTREAM_API_KEY").ok();
 
+    let Some(stored) = response_store.load(response_id).await? else {
+        return Ok(ProcessOutcome::Ack);
+    };
+    match pre_claim_action(&stored) {
+        PreClaimAction::Ack => return Ok(ProcessOutcome::Ack),
+        PreClaimAction::MarkInterruptedAndAck => {
+            mark_failed(
+                response_store,
+                response_id,
+                "background response interrupted during processing",
+            )
+            .await?;
+            return Ok(ProcessOutcome::Ack);
+        }
+        PreClaimAction::Claim => {}
+    }
+
     let Some(work) = claim_for_processing(response_store, response_id).await? else {
-        return Ok(());
+        return outcome_after_failed_claim(response_store, response_id).await;
     };
 
     let http = upstream_http_client()?;
@@ -40,13 +68,13 @@ pub async fn process_response(response_store: &ResponseStore, response_id: &str)
                         &format!("failed to read upstream background response body: {e}"),
                     )
                     .await?;
-                    return Ok(());
+                    return Ok(ProcessOutcome::Ack);
                 }
             };
             if !status.is_success() {
                 let message = String::from_utf8_lossy(&body);
                 mark_failed(response_store, response_id, &message).await?;
-                return Ok(());
+                return Ok(ProcessOutcome::Ack);
             }
 
             let Ok(mut response) = serde_json::from_slice::<Value>(&body) else {
@@ -56,7 +84,7 @@ pub async fn process_response(response_store: &ResponseStore, response_id: &str)
                     "upstream returned invalid JSON",
                 )
                 .await?;
-                return Ok(());
+                return Ok(ProcessOutcome::Ack);
             };
             response["id"] = Value::String(response_id.to_string());
             response["background"] = Value::Bool(true);
@@ -83,7 +111,50 @@ pub async fn process_response(response_store: &ResponseStore, response_id: &str)
         }
     }
 
-    Ok(())
+    Ok(ProcessOutcome::Ack)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PreClaimAction {
+    Ack,
+    MarkInterruptedAndAck,
+    Claim,
+}
+
+fn pre_claim_action(stored: &StoredResponse) -> PreClaimAction {
+    if !should_persist(stored) {
+        return PreClaimAction::Ack;
+    }
+
+    match stored_response_status(stored) {
+        Some("completed") | Some("failed") => PreClaimAction::Ack,
+        Some("in_progress") if stored.pending_upstream_request.is_none() => {
+            PreClaimAction::MarkInterruptedAndAck
+        }
+        _ => PreClaimAction::Claim,
+    }
+}
+
+async fn outcome_after_failed_claim(
+    response_store: &ResponseStore,
+    response_id: &str,
+) -> Result<ProcessOutcome> {
+    let Some(stored) = response_store.load(response_id).await? else {
+        return Ok(ProcessOutcome::Ack);
+    };
+    match pre_claim_action(&stored) {
+        PreClaimAction::Ack => Ok(ProcessOutcome::Ack),
+        PreClaimAction::MarkInterruptedAndAck => {
+            mark_failed(
+                response_store,
+                response_id,
+                "background response interrupted during processing",
+            )
+            .await?;
+            Ok(ProcessOutcome::Ack)
+        }
+        PreClaimAction::Claim => Ok(ProcessOutcome::Retry),
+    }
 }
 
 /// Load queued work and atomically transition it to `in_progress`.
@@ -259,6 +330,35 @@ mod tests {
             enqueued_at: None,
         };
         assert!(!is_claimable(&in_progress));
+    }
+
+    #[test]
+    fn interrupted_in_progress_is_marked_failed_before_ack() {
+        let interrupted = StoredResponse {
+            upstream: "http://model".to_string(),
+            response: json!({"status": "in_progress", "background": true}),
+            input: vec![],
+            pending_upstream_request: None,
+            upstream_authorization: None,
+            enqueued_at: None,
+        };
+        assert_eq!(
+            pre_claim_action(&interrupted),
+            PreClaimAction::MarkInterruptedAndAck
+        );
+    }
+
+    #[test]
+    fn active_queued_work_requires_claim() {
+        let queued = StoredResponse {
+            upstream: "http://model".to_string(),
+            response: json!({"status": "queued", "background": true}),
+            input: vec![],
+            pending_upstream_request: Some(json!({"input": "hi"})),
+            upstream_authorization: None,
+            enqueued_at: None,
+        };
+        assert_eq!(pre_claim_action(&queued), PreClaimAction::Claim);
     }
 
     #[test]

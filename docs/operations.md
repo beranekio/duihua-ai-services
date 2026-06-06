@@ -60,3 +60,12 @@ Creation requests that explicitly set `store: false` are not persisted by the ga
 When `gateway.responsesApiStore.enabled=true` and `backgroundWorker.enabled=true` (default), `POST /v1/responses` with `background=true` returns immediately with a `queued` response stored in Valkey and enqueues the `response_id` on a Valkey stream. A `duihua-background-worker` Deployment consumes the stream, issues a synchronous upstream `/responses` call with `background=false` and `store=false`, and updates Valkey when processing completes. Clients poll `GET /v1/responses/{id}` until the status leaves `queued` or `in_progress`. `POST /v1/responses/{id}/cancel` marks the stored response `cancelled` in Valkey (workers must respect terminal statuses).
 
 This path does not change inference Deployments or vLLM flags. Tune `backgroundWorker.streamKey` and `backgroundWorker.staleSeconds` for queue routing and stale-response reconciliation on `GET /v1/responses/{id}`. Stream retention (trim after `XACK`) is handled by the background-worker consumer, not gateway `XADD`.
+
+#### Local kind and CI scripts
+
+- `scripts/build-and-load-images.sh` builds and loads gateway and background-worker images, then restarts both Deployments when deployed.
+- `scripts/deploy-kind.sh` upgrades the Helm release and restarts gateway and background-worker Deployments so `:local` image tags are picked up.
+- `scripts/restart-background-worker-deployment.sh` restarts only the worker Deployment (optional `BACKGROUND_WORKER_DEPLOYMENT_REQUIRED=true` for hard failure when missing).
+- `scripts/smoke-test-kind.sh` waits for the gateway health endpoint and, when background queueing is enabled, for the background-worker Deployment to become ready before exercising completion, cancel, delete, and resource checks.
+
+Set `backgroundWorker.enabled=false` to disable the worker Deployment while keeping the response store enabled. Disable `gateway.responsesApiStore.enabled` to turn off persistence and queueing entirely.

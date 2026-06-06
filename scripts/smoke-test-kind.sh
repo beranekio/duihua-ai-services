@@ -51,6 +51,27 @@ wait_for_gateway() {
   exit 1
 }
 
+wait_for_background_worker() {
+  if ! background_queue_enabled; then
+    echo "Background queue disabled; skipping worker readiness wait"
+    return 0
+  fi
+  if ! background_worker_deployed; then
+    echo "Background queue enabled without worker Deployment; skipping worker readiness wait"
+    return 0
+  fi
+
+  local deployment="${RELEASE_NAME}-duihua-ai-services-background-worker"
+  echo "Waiting for background worker deployment ${deployment}..."
+  local wait_timeout="$((HEALTHZ_RETRIES * HEALTHZ_INTERVAL_SECONDS))"
+  if ! kubectl wait --for=condition=available "deployment/${deployment}" \
+    -n "${NAMESPACE}" --timeout="${wait_timeout}s"; then
+    echo "Background worker deployment did not become available" >&2
+    exit 1
+  fi
+  echo "Background worker deployment available"
+}
+
 post_response() {
   local payload="$1"
   curl -sf "${GATEWAY_BASE_URL}/v1/responses" \
@@ -362,6 +383,7 @@ main() {
   require_command kubectl
 
   wait_for_gateway
+  wait_for_background_worker
   test_messages_completion
   test_messages_default_model
   test_messages_count_tokens

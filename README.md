@@ -98,7 +98,7 @@ To use an external Valkey/Redis-compatible service instead, keep `valkey.enabled
 
 For local Docker Compose, set `RESPONSES_API_STORE_ENABLED=true` when starting the stack to exercise persisted follow-up Responses API calls. Streaming responses are persisted after their `response.completed` event.
 
-With the Helm chart, `background=true` Responses API requests are enqueued on a Valkey stream and processed by the `duihua-background-worker` Deployment (synchronous upstream call per message, result written to Valkey). Enable both `gateway.responsesApiStore.enabled=true` and `valkey.enabled=true` (or an external response store URL). Background queue enqueue is on by default when the store is enabled (`gateway.responsesApiStore.backgroundJobs.enabled`). The kind workflow (`values-kind.yaml`) enables the store, Valkey, and background queue settings for local testing; end-to-end background completion requires the stream consumer Deployment (#44/#45).
+With the Helm chart, `background=true` Responses API requests are enqueued on a Valkey stream and processed by the `duihua-background-worker` Deployment (synchronous upstream call per message, result written to Valkey). Enable `gateway.responsesApiStore.enabled=true`, `backgroundWorker.enabled=true`, and `valkey.enabled=true` (or an external response store URL). The kind workflow (`values-kind.yaml`) enables the store, Valkey, background worker, and queue settings for local end-to-end background completion testing.
 
 ## Cloud-provider independence
 
@@ -182,7 +182,7 @@ scripts/kind-local-up.sh
 
 By default, this creates a kind cluster named `duihua-local`, installs the chart into namespace `duihua`, enables the bundled CPU vLLM inference deployment, and exposes the gateway at `http://127.0.0.1:8080` via the kind port mapping in `kind/cluster.yaml`.
 
-After a local gateway image rebuild, `scripts/build-and-load-images.sh` and `scripts/deploy-kind.sh` restart the gateway Deployment so running pods load the new image even when Helm reuses the same `GATEWAY_IMAGE_TAG` (default `local`). Local kind scripts that talk to the cluster (`install-keda.sh`, `deploy-kind.sh`, and the gateway restart helper) target the same kind cluster via `KUBECTL_CONTEXT` (default `kind-${CLUSTER_NAME}`), including Helm `--kube-context`. Set `GATEWAY_ROLLOUT_RESTART=false` to skip automatic restarts (rollout status is still checked after deploy).
+After a local gateway or background-worker image rebuild, `scripts/build-and-load-images.sh` and `scripts/deploy-kind.sh` restart the gateway and background-worker Deployments so running pods load the new image even when Helm reuses the same image tag (default `local`). Local kind scripts that talk to the cluster (`install-keda.sh`, `deploy-kind.sh`, and the rollout restart helpers) target the same kind cluster via `KUBECTL_CONTEXT` (default `kind-${CLUSTER_NAME}`), including Helm `--kube-context`. Set `GATEWAY_ROLLOUT_RESTART=false` or `BACKGROUND_WORKER_ROLLOUT_RESTART=false` to skip automatic restarts (rollout status is still checked after deploy).
 
 ```bash
 curl http://127.0.0.1:8080/healthz
@@ -203,6 +203,7 @@ Useful environment variables:
 - `BACKGROUND_WORKER_IMAGE_REPO` (default: `duihua-background-worker`)
 - `BACKGROUND_WORKER_IMAGE_TAG` (default: same as `GATEWAY_IMAGE_TAG`)
 - `GATEWAY_ROLLOUT_RESTART` (default: `true`, used by `scripts/build-and-load-images.sh` and `scripts/deploy-kind.sh`)
+- `BACKGROUND_WORKER_ROLLOUT_RESTART` (default: `true`, used by `scripts/build-and-load-images.sh` and `scripts/deploy-kind.sh`)
 - `INFERENCE_ENABLED` (default: `true`)
 - `VALUES_FILE` (default: `charts/duihua-ai-services/values-kind.yaml`)
 - `KEDA_NAMESPACE` (default: `keda`)

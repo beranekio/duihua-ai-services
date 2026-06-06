@@ -9,7 +9,7 @@ NAMESPACE="${NAMESPACE:-duihua}"
 KUBECTL_CONTEXT="${KUBECTL_CONTEXT:-}"
 HEALTHZ_RETRIES="${HEALTHZ_RETRIES:-30}"
 HEALTHZ_INTERVAL_SECONDS="${HEALTHZ_INTERVAL_SECONDS:-5}"
-BACKGROUND_POLL_ATTEMPTS="${BACKGROUND_POLL_ATTEMPTS:-30}"
+BACKGROUND_POLL_ATTEMPTS="${BACKGROUND_POLL_ATTEMPTS:-45}"
 BACKGROUND_POLL_INTERVAL_SECONDS="${BACKGROUND_POLL_INTERVAL_SECONDS:-2}"
 CANCEL_POLL_ATTEMPTS="${CANCEL_POLL_ATTEMPTS:-20}"
 DELETE_POLL_ATTEMPTS="${DELETE_POLL_ATTEMPTS:-10}"
@@ -298,44 +298,61 @@ background_queue_enabled() {
   [[ "${enabled}" == "true" ]]
 }
 
+background_worker_deployed() {
+  local deployment="${RELEASE_NAME}-duihua-ai-services-background-worker"
+  kubectl get deployment "${deployment}" -n "${NAMESPACE}" >/dev/null 2>&1
+}
+
 skip_background_completion_tests() {
   if [[ "${SMOKE_TEST_SKIP_BACKGROUND_COMPLETION:-}" == "true" ]]; then
     return 0
   fi
-  background_queue_enabled
-}
-
-test_background_job_resources() {
-  echo "=== background job resources ==="
-  if background_queue_enabled; then
-    echo "background queue enabled; skipping Kubernetes Job resource checks until worker consumer lands"
+  if background_queue_enabled && ! background_worker_deployed; then
     return 0
   fi
-  python3 - "${NAMESPACE}" "${KUBECTL_CONTEXT}" <<'PY'
+  return 1
+}
+
+test_background_worker_resources() {
+  echo "=== background worker resources ==="
+  if ! background_queue_enabled; then
+    echo "background queue disabled; skipping worker resource checks"
+    return 0
+  fi
+  if ! background_worker_deployed; then
+    echo "background queue enabled without worker Deployment; skipping resource checks"
+    return 0
+  fi
+  python3 - "${NAMESPACE}" "${RELEASE_NAME}" "${KUBECTL_CONTEXT}" <<'PY'
 import json
 import os
 import subprocess
 import sys
 
 namespace = sys.argv[1]
+release_name = sys.argv[2]
 kubectl = ["kubectl"]
-context = sys.argv[2] if len(sys.argv) > 2 else os.environ.get("KUBECTL_CONTEXT", "")
+context = sys.argv[3] if len(sys.argv) > 3 else os.environ.get("KUBECTL_CONTEXT", "")
 if context:
     kubectl.extend(["--context", context])
+deployment = f"{release_name}-duihua-ai-services-background-worker"
 raw = subprocess.check_output(
-    [*kubectl, "get", "jobs", "-n", namespace, "-o", "json"],
+    [*kubectl, "get", "deployment", deployment, "-n", namespace, "-o", "json"],
     text=True,
 )
-jobs = json.loads(raw).get("items", [])
-if not jobs:
-    raise SystemExit(f"no background jobs found in namespace {namespace}")
-
-resources = jobs[-1]["spec"]["template"]["spec"]["containers"][0].get("resources", {})
+resources = (
+    json.loads(raw)
+    .get("spec", {})
+    .get("template", {})
+    .get("spec", {})
+    .get("containers", [{}])[0]
+    .get("resources", {})
+)
 requests = resources.get("requests") or {}
 if not requests:
-    raise SystemExit(f"latest background job is missing resource requests: {resources}")
+    raise SystemExit(f"background worker deployment is missing resource requests: {resources}")
 
-print(f"background job resources OK: {resources}")
+print(f"background worker resources OK: {resources}")
 PY
 }
 
@@ -351,14 +368,14 @@ main() {
   test_sync_response_persistence
   if skip_background_completion_tests; then
     echo "=== background response completion ==="
-    echo "background queue enabled without worker consumer; skipping completion poll until #44"
+    echo "background queue enabled without worker Deployment; skipping completion poll"
   else
     test_background_response_completion
   fi
   test_background_cancel_stays_cancelled
   test_background_delete_tombstone
   test_in_flight_continuation_rejected
-  test_background_job_resources
+  test_background_worker_resources
 
   echo
   echo "All kind gateway smoke tests passed."

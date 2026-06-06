@@ -10,14 +10,6 @@
 {{- end -}}
 {{- end -}}
 
-{{- define "duihua.serviceAccountName" -}}
-{{- if .Values.serviceAccount.create -}}
-{{- default (include "duihua.fullname" .) .Values.serviceAccount.name -}}
-{{- else -}}
-{{- default "default" .Values.serviceAccount.name -}}
-{{- end -}}
-{{- end -}}
-
 {{- define "duihua.responsesApiStore.enabled" -}}
 {{- if hasKey .Values.gateway.responsesApiStore "enabled" -}}
 {{- .Values.gateway.responsesApiStore.enabled -}}
@@ -26,8 +18,45 @@
 {{- end -}}
 {{- end -}}
 
+{{- define "duihua.serviceAccountName" -}}
+{{- if .Values.serviceAccount.create -}}
+{{- default (include "duihua.fullname" .) .Values.serviceAccount.name -}}
+{{- else -}}
+{{- default "default" .Values.serviceAccount.name -}}
+{{- end -}}
+{{- end -}}
+
+{{- define "duihua.responseIdStoreUrl" -}}
+{{- if .Values.valkey.enabled -}}
+redis://{{ include "duihua.fullname" . }}-valkey:{{ .Values.valkey.service.port }}
+{{- else -}}
+{{- .Values.gateway.env.responseIdStoreUrl -}}
+{{- end -}}
+{{- end -}}
+
 {{- define "duihua.background.enabled" -}}
-{{- if and (eq (include "duihua.responsesApiStore.enabled" .) "true") .Values.gateway.responsesApiStore.backgroundJobs.enabled -}}
+{{- if ne (include "duihua.responsesApiStore.enabled" .) "true" -}}
+{{- else if not .Values.backgroundWorker.enabled -}}
+{{- else if eq (dig "backgroundJobs" "enabled" true .Values.gateway.responsesApiStore) false -}}
+{{- else -}}
 true
+{{- end -}}
+{{- end -}}
+
+{{- define "duihua.background.streamKey" -}}
+{{- $backgroundJobs := get .Values.gateway.responsesApiStore "backgroundJobs" | default dict -}}
+{{- if hasKey $backgroundJobs "streamKey" -}}
+{{- get $backgroundJobs "streamKey" -}}
+{{- else -}}
+{{- .Values.backgroundWorker.streamKey -}}
+{{- end -}}
+{{- end -}}
+
+{{- define "duihua.background.staleSeconds" -}}
+{{- $backgroundJobs := get .Values.gateway.responsesApiStore "backgroundJobs" | default dict -}}
+{{- if hasKey $backgroundJobs "staleSeconds" -}}
+{{- get $backgroundJobs "staleSeconds" -}}
+{{- else -}}
+{{- .Values.backgroundWorker.staleSeconds -}}
 {{- end -}}
 {{- end -}}

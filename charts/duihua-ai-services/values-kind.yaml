@@ -26,7 +26,6 @@ gateway:
       enabled: true
       streamKey: duihua:responses:background
       staleSeconds: 3600
-      streamMaxLen: 100000
 
 backgroundWorker:
   image:

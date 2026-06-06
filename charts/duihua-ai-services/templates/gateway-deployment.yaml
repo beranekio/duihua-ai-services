@@ -57,8 +57,6 @@ spec:
               value: {{ .Values.gateway.responsesApiStore.backgroundJobs.streamKey | quote }}
             - name: BACKGROUND_RESPONSE_STALE_SECONDS
               value: {{ .Values.gateway.responsesApiStore.backgroundJobs.staleSeconds | quote }}
-            - name: BACKGROUND_QUEUE_STREAM_MAXLEN
-              value: {{ .Values.gateway.responsesApiStore.backgroundJobs.streamMaxLen | quote }}
             {{- end }}
             - name: MODEL_UPSTREAMS
               {{ if .Values.inference.enabled }}

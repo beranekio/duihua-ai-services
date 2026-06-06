@@ -4,12 +4,12 @@ use anyhow::{Context, Result};
 use duihua_common::{
     is_in_flight_background, parse_bool_env, stored_response_status, ResponseStore, StoredResponse,
 };
+use redis::AsyncCommands;
 
 pub struct BackgroundQueue {
     connection: redis::aio::MultiplexedConnection,
     stream_key: String,
     stale_seconds: i64,
-    stream_maxlen: usize,
 }
 
 pub async fn background_queue_from_env() -> Result<Option<BackgroundQueue>> {
@@ -25,10 +25,6 @@ pub async fn background_queue_from_env() -> Result<Option<BackgroundQueue>> {
         .ok()
         .and_then(|value| value.parse().ok())
         .unwrap_or(3600);
-    let stream_maxlen = env::var("BACKGROUND_QUEUE_STREAM_MAXLEN")
-        .ok()
-        .and_then(|value| value.parse().ok())
-        .unwrap_or(100_000);
 
     let client = redis::Client::open(url.as_str())
         .with_context(|| format!("invalid RESPONSE_ID_STORE_URL {url}"))?;
@@ -41,22 +37,14 @@ pub async fn background_queue_from_env() -> Result<Option<BackgroundQueue>> {
         connection,
         stream_key,
         stale_seconds,
-        stream_maxlen,
     }))
 }
 
 impl BackgroundQueue {
     pub async fn enqueue(&self, response_id: &str) -> redis::RedisResult<()> {
         let mut connection = self.connection.clone();
-        redis::cmd("XADD")
-            .arg(&self.stream_key)
-            .arg("MAXLEN")
-            .arg("~")
-            .arg(self.stream_maxlen)
-            .arg("*")
-            .arg("response_id")
-            .arg(response_id)
-            .query_async(&mut connection)
+        connection
+            .xadd(&self.stream_key, "*", &[("response_id", response_id)])
             .await
     }
 

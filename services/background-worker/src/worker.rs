@@ -78,6 +78,7 @@ pub async fn run() -> Result<()> {
                     input: work.input,
                     pending_upstream_request: None,
                     upstream_authorization: None,
+                    enqueued_at: None,
                 },
             )
             .await?;
@@ -164,6 +165,11 @@ fn with_response_status(response: &Value, status: &str) -> Value {
     updated
 }
 
+fn merge_completion(current: &StoredResponse, mut completion: StoredResponse) -> StoredResponse {
+    completion.enqueued_at = current.enqueued_at;
+    completion
+}
+
 async fn store_completion(
     response_store: &ResponseStore,
     response_id: &str,
@@ -175,6 +181,7 @@ async fn store_completion(
     if !should_persist(&current) {
         return Ok(());
     }
+    let stored = merge_completion(&current, stored);
     response_store
         .store(response_id, &stored)
         .await
@@ -221,6 +228,7 @@ mod tests {
             input: vec![],
             pending_upstream_request: None,
             upstream_authorization: None,
+            enqueued_at: None,
         };
         assert!(!should_persist(&cancelled));
 
@@ -230,6 +238,7 @@ mod tests {
             input: vec![],
             pending_upstream_request: None,
             upstream_authorization: None,
+            enqueued_at: None,
         };
         assert!(!should_persist(&deleted));
     }
@@ -242,6 +251,7 @@ mod tests {
             input: vec![],
             pending_upstream_request: Some(json!({"input": "hi"})),
             upstream_authorization: None,
+            enqueued_at: None,
         };
         assert!(is_claimable(&queued));
 
@@ -251,8 +261,33 @@ mod tests {
             input: vec![],
             pending_upstream_request: None,
             upstream_authorization: None,
+            enqueued_at: None,
         };
         assert!(!is_claimable(&in_progress));
+    }
+
+    #[test]
+    fn merge_completion_preserves_enqueued_at() {
+        let current = StoredResponse {
+            upstream: "http://model".to_string(),
+            response: json!({"status": "in_progress", "background": true}),
+            input: vec![json!({"role": "user", "content": "hi"})],
+            pending_upstream_request: None,
+            upstream_authorization: None,
+            enqueued_at: Some(1_746_500_000),
+        };
+        let completion = StoredResponse {
+            upstream: "http://model".to_string(),
+            response: json!({"status": "completed", "background": true}),
+            input: vec![json!({"role": "user", "content": "hi"})],
+            pending_upstream_request: None,
+            upstream_authorization: None,
+            enqueued_at: None,
+        };
+
+        let merged = merge_completion(&current, completion);
+        assert_eq!(merged.enqueued_at, Some(1_746_500_000));
+        assert_eq!(stored_response_status(&merged), Some("completed"));
     }
 
     #[test]

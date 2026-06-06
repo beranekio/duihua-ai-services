@@ -1,9 +1,7 @@
 use std::{env, time::Duration};
 
 use anyhow::{Context, Result};
-use duihua_common::{
-    response_store_from_env, stored_response_status, ResponseStore, StoredResponse,
-};
+use duihua_common::{stored_response_status, ResponseStore, StoredResponse};
 use reqwest::Client as HttpClient;
 use serde_json::{json, Value};
 
@@ -14,14 +12,59 @@ struct ClaimedWork {
     upstream_authorization: Option<String>,
 }
 
-pub async fn run() -> Result<()> {
-    let response_id =
-        env::var("BACKGROUND_RESPONSE_ID").context("BACKGROUND_RESPONSE_ID is required")?;
-    let upstream_api_key = env::var("UPSTREAM_API_KEY").ok();
-    let response_store = response_store_from_env().await?;
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProcessOutcome {
+    /// The stream entry can be acknowledged and removed.
+    Ack,
+    /// Leave the entry pending for redelivery.
+    Retry,
+}
 
-    let Some(work) = claim_for_processing(&response_store, &response_id).await? else {
-        return Ok(());
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum EntrySource {
+    /// Entry was returned by `XAUTOCLAIM` and already met the min-idle threshold.
+    Autoclaimed,
+    /// Entry was read from this consumer's pending list at startup.
+    StartupPending,
+    /// Entry was delivered live via `XREADGROUP`.
+    #[default]
+    Live,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ProcessContext {
+    pub message_idle_ms: Option<u64>,
+    pub autoclaim_min_idle_ms: usize,
+    pub entry_source: EntrySource,
+}
+
+pub async fn process_response(
+    response_store: &ResponseStore,
+    response_id: &str,
+    ctx: ProcessContext,
+) -> Result<ProcessOutcome> {
+    let upstream_api_key = env::var("UPSTREAM_API_KEY").ok();
+
+    let Some(stored) = response_store.load(response_id).await? else {
+        return Ok(ProcessOutcome::Ack);
+    };
+    match pre_claim_action(&stored, ctx) {
+        PreClaimAction::Ack => return Ok(ProcessOutcome::Ack),
+        PreClaimAction::Retry => return Ok(ProcessOutcome::Retry),
+        PreClaimAction::MarkInterruptedAndAck => {
+            mark_failed(
+                response_store,
+                response_id,
+                "background response interrupted during processing",
+            )
+            .await?;
+            return Ok(ProcessOutcome::Ack);
+        }
+        PreClaimAction::Claim => {}
+    }
+
+    let Some(work) = claim_for_processing(response_store, response_id).await? else {
+        return outcome_after_failed_claim(response_store, response_id, ctx).await;
     };
 
     let http = upstream_http_client()?;
@@ -40,38 +83,40 @@ pub async fn run() -> Result<()> {
                 Ok(body) => body,
                 Err(e) => {
                     mark_failed(
-                        &response_store,
-                        &response_id,
+                        response_store,
+                        response_id,
                         &format!("failed to read upstream background response body: {e}"),
                     )
                     .await?;
-                    return Ok(());
+                    return Ok(ProcessOutcome::Ack);
                 }
             };
             if !status.is_success() {
                 let message = String::from_utf8_lossy(&body);
-                mark_failed(&response_store, &response_id, &message).await?;
-                return Ok(());
+                mark_failed(response_store, response_id, &message).await?;
+                return Ok(ProcessOutcome::Ack);
             }
 
-            let Ok(mut response) = serde_json::from_slice::<Value>(&body) else {
+            let Ok(response) = serde_json::from_slice::<Value>(&body) else {
                 mark_failed(
-                    &response_store,
-                    &response_id,
+                    response_store,
+                    response_id,
                     "upstream returned invalid JSON",
                 )
                 .await?;
-                return Ok(());
+                return Ok(ProcessOutcome::Ack);
             };
-            response["id"] = Value::String(response_id.clone());
-            response["background"] = Value::Bool(true);
-            if response.get("status").is_none() {
-                response["status"] = Value::String("completed".to_string());
-            }
+            let response = match enrich_upstream_completion_response(response, response_id) {
+                Ok(response) => response,
+                Err(message) => {
+                    mark_failed(response_store, response_id, message).await?;
+                    return Ok(ProcessOutcome::Ack);
+                }
+            };
 
             store_completion(
-                &response_store,
-                &response_id,
+                response_store,
+                response_id,
                 StoredResponse {
                     upstream: work.upstream,
                     response,
@@ -84,11 +129,71 @@ pub async fn run() -> Result<()> {
             .await?;
         }
         Err(e) => {
-            mark_failed(&response_store, &response_id, &e.to_string()).await?;
+            mark_failed(response_store, response_id, &e.to_string()).await?;
         }
     }
 
-    Ok(())
+    Ok(ProcessOutcome::Ack)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PreClaimAction {
+    Ack,
+    MarkInterruptedAndAck,
+    Claim,
+    Retry,
+}
+
+fn pre_claim_action(stored: &StoredResponse, ctx: ProcessContext) -> PreClaimAction {
+    if !should_persist(stored) {
+        return PreClaimAction::Ack;
+    }
+
+    match stored_response_status(stored) {
+        Some("completed") | Some("failed") | Some("incomplete") => PreClaimAction::Ack,
+        Some("in_progress") if stored.pending_upstream_request.is_none() => {
+            if is_stale_reclaim(ctx) {
+                PreClaimAction::MarkInterruptedAndAck
+            } else {
+                PreClaimAction::Retry
+            }
+        }
+        _ => PreClaimAction::Claim,
+    }
+}
+
+fn is_stale_reclaim(ctx: ProcessContext) -> bool {
+    match ctx.entry_source {
+        EntrySource::Autoclaimed | EntrySource::StartupPending => true,
+        EntrySource::Live => match ctx.message_idle_ms {
+            Some(idle) => idle >= ctx.autoclaim_min_idle_ms as u64,
+            None => false,
+        },
+    }
+}
+
+async fn outcome_after_failed_claim(
+    response_store: &ResponseStore,
+    response_id: &str,
+    ctx: ProcessContext,
+) -> Result<ProcessOutcome> {
+    let Some(stored) = response_store.load(response_id).await? else {
+        return Ok(ProcessOutcome::Ack);
+    };
+    match pre_claim_action(&stored, ctx) {
+        PreClaimAction::Ack => Ok(ProcessOutcome::Ack),
+        PreClaimAction::Retry => Ok(ProcessOutcome::Retry),
+        PreClaimAction::MarkInterruptedAndAck => {
+            mark_failed(
+                response_store,
+                response_id,
+                "background response interrupted during processing",
+            )
+            .await?;
+            Ok(ProcessOutcome::Ack)
+        }
+        PreClaimAction::Claim => Ok(ProcessOutcome::Retry),
+    }
 }
 
 /// Load queued work and atomically transition it to `in_progress`.
@@ -142,6 +247,21 @@ fn upstream_http_client() -> Result<HttpClient> {
         .timeout(upstream_timeout_from_env())
         .build()
         .context("failed to build upstream HTTP client")
+}
+
+fn enrich_upstream_completion_response(
+    mut response: Value,
+    response_id: &str,
+) -> Result<Value, &'static str> {
+    if !response.is_object() {
+        return Err("upstream returned JSON that is not an object");
+    }
+    response["id"] = Value::String(response_id.to_string());
+    response["background"] = Value::Bool(true);
+    if response.get("status").is_none() {
+        response["status"] = Value::String("completed".to_string());
+    }
+    Ok(response)
 }
 
 fn upstream_timeout_from_env() -> Duration {
@@ -267,6 +387,98 @@ mod tests {
     }
 
     #[test]
+    fn autoclaimed_in_progress_is_stale_without_idle_metadata() {
+        let interrupted = StoredResponse {
+            upstream: "http://model".to_string(),
+            response: json!({"status": "in_progress", "background": true}),
+            input: vec![],
+            pending_upstream_request: None,
+            upstream_authorization: None,
+            enqueued_at: None,
+        };
+        let ctx = ProcessContext {
+            message_idle_ms: None,
+            autoclaim_min_idle_ms: 720_000,
+            entry_source: EntrySource::Autoclaimed,
+        };
+        assert_eq!(
+            pre_claim_action(&interrupted, ctx),
+            PreClaimAction::MarkInterruptedAndAck
+        );
+    }
+
+    #[test]
+    fn startup_pending_in_progress_is_stale_without_idle_metadata() {
+        let interrupted = StoredResponse {
+            upstream: "http://model".to_string(),
+            response: json!({"status": "in_progress", "background": true}),
+            input: vec![],
+            pending_upstream_request: None,
+            upstream_authorization: None,
+            enqueued_at: None,
+        };
+        let ctx = ProcessContext {
+            message_idle_ms: None,
+            autoclaim_min_idle_ms: 720_000,
+            entry_source: EntrySource::StartupPending,
+        };
+        assert_eq!(
+            pre_claim_action(&interrupted, ctx),
+            PreClaimAction::MarkInterruptedAndAck
+        );
+    }
+
+    #[test]
+    fn recently_reclaimed_live_in_progress_stays_retryable() {
+        let interrupted = StoredResponse {
+            upstream: "http://model".to_string(),
+            response: json!({"status": "in_progress", "background": true}),
+            input: vec![],
+            pending_upstream_request: None,
+            upstream_authorization: None,
+            enqueued_at: None,
+        };
+        let ctx = ProcessContext {
+            message_idle_ms: Some(30_000),
+            autoclaim_min_idle_ms: 720_000,
+            entry_source: EntrySource::Live,
+        };
+        assert_eq!(pre_claim_action(&interrupted, ctx), PreClaimAction::Retry);
+    }
+
+    #[test]
+    fn incomplete_responses_are_ackable() {
+        let incomplete = StoredResponse {
+            upstream: "http://model".to_string(),
+            response: json!({"status": "incomplete", "background": true}),
+            input: vec![],
+            pending_upstream_request: None,
+            upstream_authorization: None,
+            enqueued_at: None,
+        };
+        assert_eq!(
+            pre_claim_action(&incomplete, ProcessContext::default()),
+            PreClaimAction::Ack
+        );
+    }
+
+    #[test]
+    fn active_queued_work_requires_claim() {
+        let queued = StoredResponse {
+            upstream: "http://model".to_string(),
+            response: json!({"status": "queued", "background": true}),
+            input: vec![],
+            pending_upstream_request: Some(json!({"input": "hi"})),
+            upstream_authorization: None,
+            enqueued_at: None,
+        };
+        assert_eq!(
+            pre_claim_action(&queued, ProcessContext::default()),
+            PreClaimAction::Claim
+        );
+    }
+
+    #[test]
     fn merge_completion_preserves_enqueued_at() {
         let current = StoredResponse {
             upstream: "http://model".to_string(),
@@ -288,6 +500,21 @@ mod tests {
         let merged = merge_completion(&current, completion);
         assert_eq!(merged.enqueued_at, Some(1_746_500_000));
         assert_eq!(stored_response_status(&merged), Some("completed"));
+    }
+
+    #[test]
+    fn enrich_upstream_response_rejects_non_object_json() {
+        assert!(enrich_upstream_completion_response(json!([]), "resp_x").is_err());
+        assert!(enrich_upstream_completion_response(json!("ok"), "resp_x").is_err());
+    }
+
+    #[test]
+    fn enrich_upstream_response_adds_defaults() {
+        let enriched =
+            enrich_upstream_completion_response(json!({"object": "response"}), "resp_x").unwrap();
+        assert_eq!(enriched["id"], "resp_x");
+        assert_eq!(enriched["background"], true);
+        assert_eq!(enriched["status"], "completed");
     }
 
     #[test]

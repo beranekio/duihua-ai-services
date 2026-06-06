@@ -20,7 +20,7 @@ pub struct StoredResponse {
 
 #[derive(Clone)]
 pub struct ResponseStore {
-    connection: redis::aio::MultiplexedConnection,
+    connection: redis::aio::ConnectionManager,
     key_prefix: String,
     ttl_seconds: u64,
 }
@@ -37,8 +37,7 @@ pub async fn response_store_from_env() -> Result<ResponseStore> {
 
     let client = redis::Client::open(url.as_str())
         .with_context(|| format!("invalid RESPONSE_ID_STORE_URL {url}"))?;
-    let connection = client
-        .get_multiplexed_async_connection()
+    let connection = redis::aio::ConnectionManager::new(client)
         .await
         .with_context(|| format!("failed to connect to response id store at {url}"))?;
 

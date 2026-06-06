@@ -36,6 +36,8 @@ spec:
               value: {{ .Values.backgroundWorker.blockMs | quote }}
             - name: BACKGROUND_QUEUE_PENDING_RETRY_SECONDS
               value: {{ .Values.backgroundWorker.pendingRetrySeconds | quote }}
+            - name: BACKGROUND_QUEUE_MAX_CONCURRENT_JOBS
+              value: {{ .Values.backgroundWorker.maxConcurrentJobs | quote }}
           resources:
 {{ toYaml .Values.backgroundWorker.resources | indent 12 }}
 {{- end }}

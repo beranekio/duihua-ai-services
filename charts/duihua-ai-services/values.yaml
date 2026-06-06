@@ -41,6 +41,8 @@ backgroundWorker:
   consumerGroup: duihua-background
   blockMs: 5000
   pendingRetrySeconds: 30
+  # Maximum simultaneous upstream calls per worker pod.
+  maxConcurrentJobs: 1
   resources:
     requests:
       cpu: 100m
@@ -111,6 +113,10 @@ valkey:
     limits:
       cpu: 250m
       memory: 256Mi
+
+serviceAccount:
+  create: false
+  name: ""
 
 ingress:
   enabled: false

@@ -15,7 +15,7 @@ use redis::{
     },
     AsyncCommands, RedisError,
 };
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Semaphore};
 
 use crate::worker::{self, EntrySource, ProcessContext, ProcessOutcome};
 
@@ -35,6 +35,7 @@ pub struct QueueConfig {
     pub block_ms: usize,
     pub autoclaim_min_idle_ms: usize,
     pub autoclaim_batch_size: usize,
+    pub max_concurrent_jobs: usize,
 }
 
 impl QueueConfig {
@@ -65,6 +66,13 @@ impl QueueConfig {
         if autoclaim_batch_size == 0 {
             bail!("BACKGROUND_QUEUE_AUTOCLAIM_BATCH_SIZE must be greater than 0");
         }
+        let max_concurrent_jobs = env::var("BACKGROUND_QUEUE_MAX_CONCURRENT_JOBS")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(1);
+        if max_concurrent_jobs == 0 {
+            bail!("BACKGROUND_QUEUE_MAX_CONCURRENT_JOBS must be greater than 0");
+        }
 
         Ok(Self {
             redis_url,
@@ -74,6 +82,7 @@ impl QueueConfig {
             block_ms,
             autoclaim_min_idle_ms,
             autoclaim_batch_size,
+            max_concurrent_jobs,
         })
     }
 }
@@ -84,7 +93,14 @@ pub async fn run() -> Result<()> {
     let mut connection = connect_queue(&config).await?;
 
     ensure_consumer_group(&mut connection, &config).await?;
-    drain_pending_at_startup(&mut connection, &config, &response_store).await;
+    let job_concurrency = Arc::new(Semaphore::new(config.max_concurrent_jobs));
+    drain_pending_at_startup(
+        &mut connection,
+        &config,
+        &response_store,
+        job_concurrency.clone(),
+    )
+    .await;
 
     let mut autoclaim_cursor = "0-0".to_string();
     let pending_retries = Arc::new(Mutex::new(PendingRetryScheduler::new()));
@@ -95,6 +111,7 @@ pub async fn run() -> Result<()> {
             &config,
             &response_store,
             pending_retries.clone(),
+            job_concurrency.clone(),
         )
         .await;
 
@@ -118,6 +135,7 @@ pub async fn run() -> Result<()> {
                     &autoclaim.claimed,
                     EntrySource::Autoclaimed,
                     pending_retries.clone(),
+                    job_concurrency.clone(),
                 )
                 .await;
             }
@@ -156,6 +174,7 @@ pub async fn run() -> Result<()> {
                     &entries,
                     EntrySource::Live,
                     pending_retries.clone(),
+                    job_concurrency.clone(),
                 )
                 .await;
             }
@@ -221,6 +240,7 @@ async fn process_due_pending_retries(
     config: &QueueConfig,
     response_store: &duihua_common::ResponseStore,
     pending_retries: Arc<Mutex<PendingRetryScheduler>>,
+    job_concurrency: Arc<Semaphore>,
 ) {
     let due_stream_ids = {
         let scheduler = pending_retries.lock().await;
@@ -260,6 +280,13 @@ async fn process_due_pending_retries(
             }
         };
 
+        let permit = match job_concurrency.clone().acquire_owned().await {
+            Ok(permit) => permit,
+            Err(err) => {
+                eprintln!("background queue concurrency limit closed: {err:?}");
+                break;
+            }
+        };
         match handle_message(
             connection,
             config,
@@ -290,6 +317,7 @@ async fn process_due_pending_retries(
                 );
             }
         }
+        drop(permit);
     }
 }
 
@@ -350,6 +378,7 @@ async fn drain_pending_at_startup(
     connection: &mut ConnectionManager,
     config: &QueueConfig,
     response_store: &duihua_common::ResponseStore,
+    job_concurrency: Arc<Semaphore>,
 ) {
     loop {
         let pending: StreamPendingCountReply = match connection
@@ -408,6 +437,14 @@ async fn drain_pending_at_startup(
                 }
             };
 
+            let permit = match job_concurrency.clone().acquire_owned().await {
+                Ok(permit) => permit,
+                Err(err) => {
+                    eprintln!("background queue concurrency limit closed: {err:?}");
+                    stopped_on_error = true;
+                    break;
+                }
+            };
             match handle_message(
                 connection,
                 config,
@@ -421,9 +458,11 @@ async fn drain_pending_at_startup(
                 Err(err) => {
                     eprintln!("failed to process startup pending entry {stream_id}: {err:?}");
                     stopped_on_error = true;
+                    drop(permit);
                     break;
                 }
             }
+            drop(permit);
         }
 
         if stopped_on_error {
@@ -439,6 +478,7 @@ async fn process_stream_entries(
     entries: &[StreamId],
     entry_source: EntrySource,
     pending_retries: Arc<Mutex<PendingRetryScheduler>>,
+    job_concurrency: Arc<Semaphore>,
 ) {
     let (messages, invalid_ids) = split_stream_entries(entries);
 
@@ -452,11 +492,19 @@ async fn process_stream_entries(
     for message in messages {
         let response_id = message.response_id.clone();
         let stream_id = message.stream_id.clone();
+        let permit = match job_concurrency.clone().acquire_owned().await {
+            Ok(permit) => permit,
+            Err(err) => {
+                eprintln!("background queue concurrency limit closed: {err:?}");
+                break;
+            }
+        };
         let mut worker_connection = connection.clone();
         let config = config.clone();
         let response_store = response_store.clone();
         let pending_retries = pending_retries.clone();
         tokio::spawn(async move {
+            let _permit = permit;
             match handle_message(
                 &mut worker_connection,
                 &config,
@@ -766,6 +814,19 @@ mod tests {
         env::set_var("BACKGROUND_QUEUE_AUTOCLAIM_BATCH_SIZE", "0");
         assert!(QueueConfig::from_env().is_err());
         env::remove_var("BACKGROUND_QUEUE_AUTOCLAIM_BATCH_SIZE");
+    }
+
+    #[test]
+    fn rejects_zero_max_concurrent_jobs() {
+        env::set_var("BACKGROUND_QUEUE_MAX_CONCURRENT_JOBS", "0");
+        assert!(QueueConfig::from_env().is_err());
+        env::remove_var("BACKGROUND_QUEUE_MAX_CONCURRENT_JOBS");
+    }
+
+    #[test]
+    fn default_max_concurrent_jobs_is_one() {
+        env::remove_var("BACKGROUND_QUEUE_MAX_CONCURRENT_JOBS");
+        assert_eq!(QueueConfig::from_env().unwrap().max_concurrent_jobs, 1);
     }
 
     #[test]

@@ -18,6 +18,14 @@
 {{- end -}}
 {{- end -}}
 
+{{- define "duihua.serviceAccountName" -}}
+{{- if .Values.serviceAccount.create -}}
+{{- default (include "duihua.fullname" .) .Values.serviceAccount.name -}}
+{{- else -}}
+{{- default "default" .Values.serviceAccount.name -}}
+{{- end -}}
+{{- end -}}
+
 {{- define "duihua.responseIdStoreUrl" -}}
 {{- if .Values.valkey.enabled -}}
 redis://{{ include "duihua.fullname" . }}-valkey:{{ .Values.valkey.service.port }}
@@ -27,7 +35,10 @@ redis://{{ include "duihua.fullname" . }}-valkey:{{ .Values.valkey.service.port 
 {{- end -}}
 
 {{- define "duihua.background.enabled" -}}
-{{- if and (eq (include "duihua.responsesApiStore.enabled" .) "true") .Values.backgroundWorker.enabled -}}
+{{- if ne (include "duihua.responsesApiStore.enabled" .) "true" -}}
+{{- else if not .Values.backgroundWorker.enabled -}}
+{{- else if and (hasKey .Values.gateway.responsesApiStore "backgroundJobs") (not .Values.gateway.responsesApiStore.backgroundJobs.enabled) -}}
+{{- else -}}
 true
 {{- end -}}
 {{- end -}}

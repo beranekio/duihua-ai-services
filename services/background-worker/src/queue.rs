@@ -1,19 +1,21 @@
 use std::{
     collections::HashMap,
     env,
+    sync::Arc,
     time::{Duration, Instant},
 };
 
 use anyhow::{bail, Context, Result};
 use duihua_common::response_store_from_env;
 use redis::{
-    aio::ConnectionManager,
+    aio::{ConnectionManager, ConnectionManagerConfig},
     streams::{
         StreamAutoClaimOptions, StreamAutoClaimReply, StreamDeletionPolicy, StreamId,
         StreamPendingCountReply, StreamRangeReply, StreamReadOptions,
     },
     AsyncCommands, RedisError,
 };
+use tokio::sync::Mutex;
 
 use crate::worker::{self, EntrySource, ProcessContext, ProcessOutcome};
 
@@ -24,6 +26,7 @@ pub struct QueueMessage {
     pub idle_ms: Option<u64>,
 }
 
+#[derive(Clone)]
 pub struct QueueConfig {
     pub redis_url: String,
     pub stream_key: String,
@@ -78,24 +81,20 @@ impl QueueConfig {
 pub async fn run() -> Result<()> {
     let config = QueueConfig::from_env()?;
     let response_store = response_store_from_env().await?;
-    let client = redis::Client::open(config.redis_url.as_str())
-        .with_context(|| format!("invalid RESPONSE_ID_STORE_URL {}", config.redis_url))?;
-    let mut connection = ConnectionManager::new(client)
-        .await
-        .with_context(|| "failed to connect to background queue")?;
+    let mut connection = connect_queue(&config).await?;
 
     ensure_consumer_group(&mut connection, &config).await?;
     drain_pending_at_startup(&mut connection, &config, &response_store).await;
 
     let mut autoclaim_cursor = "0-0".to_string();
-    let mut pending_retries = PendingRetryScheduler::new();
+    let pending_retries = Arc::new(Mutex::new(PendingRetryScheduler::new()));
 
     loop {
         process_due_pending_retries(
             &mut connection,
             &config,
             &response_store,
-            &mut pending_retries,
+            pending_retries.clone(),
         )
         .await;
 
@@ -118,7 +117,7 @@ pub async fn run() -> Result<()> {
                     &response_store,
                     &autoclaim.claimed,
                     EntrySource::Autoclaimed,
-                    &mut pending_retries,
+                    pending_retries.clone(),
                 )
                 .await;
             }
@@ -129,6 +128,7 @@ pub async fn run() -> Result<()> {
                     sleep_on_redis_error().await;
                 }
             }
+            Err(err) if is_blocking_command_timeout(&err) => {}
             Err(err) => {
                 eprintln!("failed to auto-claim background queue messages: {err:?}");
                 sleep_on_redis_error().await;
@@ -155,11 +155,12 @@ pub async fn run() -> Result<()> {
                     &response_store,
                     &entries,
                     EntrySource::Live,
-                    &mut pending_retries,
+                    pending_retries.clone(),
                 )
                 .await;
             }
             Ok(None) => {}
+            Err(err) if is_blocking_command_timeout(&err) => {}
             Err(err) if is_nogroup(&err) => {
                 eprintln!("background queue consumer group missing during read; recreating");
                 if let Err(ensure_err) = ensure_consumer_group(&mut connection, &config).await {
@@ -219,14 +220,20 @@ async fn process_due_pending_retries(
     connection: &mut ConnectionManager,
     config: &QueueConfig,
     response_store: &duihua_common::ResponseStore,
-    pending_retries: &mut PendingRetryScheduler,
+    pending_retries: Arc<Mutex<PendingRetryScheduler>>,
 ) {
-    let due_stream_ids = pending_retries.due_stream_ids();
+    let due_stream_ids = {
+        let scheduler = pending_retries.lock().await;
+        scheduler.due_stream_ids()
+    };
     for stream_id in due_stream_ids {
-        let Some(retry_entry) = pending_retries.entries.get(&stream_id) else {
-            continue;
+        let response_id = {
+            let scheduler = pending_retries.lock().await;
+            let Some(retry_entry) = scheduler.entries.get(&stream_id) else {
+                continue;
+            };
+            retry_entry.response_id.clone()
         };
-        let response_id = retry_entry.response_id.clone();
         let idle_ms = pending_idle_ms(connection, config, &stream_id)
             .await
             .unwrap_or(None);
@@ -238,13 +245,17 @@ async fn process_due_pending_retries(
                     .await
                     .is_ok()
                 {
-                    pending_retries.remove(&stream_id);
+                    pending_retries.lock().await.remove(&stream_id);
                 }
                 continue;
             }
             Err(err) => {
                 eprintln!("failed to load pending retry entry {stream_id}: {err:?}");
-                pending_retries.schedule(stream_id, response_id, pending_retry_backoff_from_env());
+                pending_retries.lock().await.schedule(
+                    stream_id,
+                    response_id,
+                    pending_retry_backoff_from_env(),
+                );
                 continue;
             }
         };
@@ -258,15 +269,25 @@ async fn process_due_pending_retries(
         )
         .await
         {
-            Ok(()) => pending_retries.remove(&stream_id),
+            Ok(()) => {
+                pending_retries.lock().await.remove(&stream_id);
+            }
             Err(err) if err.downcast_ref::<RetryableMessageError>().is_some() => {
-                pending_retries.schedule(stream_id, response_id, pending_retry_backoff_from_env());
+                pending_retries.lock().await.schedule(
+                    stream_id,
+                    response_id,
+                    pending_retry_backoff_from_env(),
+                );
             }
             Err(err) => {
                 eprintln!(
                     "failed pending retry for background queue message {response_id}: {err:?}"
                 );
-                pending_retries.schedule(stream_id, response_id, pending_retry_backoff_from_env());
+                pending_retries.lock().await.schedule(
+                    stream_id,
+                    response_id,
+                    pending_retry_backoff_from_env(),
+                );
             }
         }
     }
@@ -417,7 +438,7 @@ async fn process_stream_entries(
     response_store: &duihua_common::ResponseStore,
     entries: &[StreamId],
     entry_source: EntrySource,
-    pending_retries: &mut PendingRetryScheduler,
+    pending_retries: Arc<Mutex<PendingRetryScheduler>>,
 ) {
     let (messages, invalid_ids) = split_stream_entries(entries);
 
@@ -431,15 +452,33 @@ async fn process_stream_entries(
     for message in messages {
         let response_id = message.response_id.clone();
         let stream_id = message.stream_id.clone();
-        match handle_message(connection, config, response_store, message, entry_source).await {
-            Ok(()) => {}
-            Err(err) if err.downcast_ref::<RetryableMessageError>().is_some() => {
-                pending_retries.schedule(stream_id, response_id, pending_retry_backoff_from_env());
+        let mut worker_connection = connection.clone();
+        let config = config.clone();
+        let response_store = response_store.clone();
+        let pending_retries = pending_retries.clone();
+        tokio::spawn(async move {
+            match handle_message(
+                &mut worker_connection,
+                &config,
+                &response_store,
+                message,
+                entry_source,
+            )
+            .await
+            {
+                Ok(()) => {}
+                Err(err) if err.downcast_ref::<RetryableMessageError>().is_some() => {
+                    pending_retries.lock().await.schedule(
+                        stream_id,
+                        response_id,
+                        pending_retry_backoff_from_env(),
+                    );
+                }
+                Err(err) => {
+                    eprintln!("failed to process background queue message {response_id}: {err:?}");
+                }
             }
-            Err(err) => {
-                eprintln!("failed to process background queue message {response_id}: {err:?}");
-            }
-        }
+        });
     }
 }
 
@@ -594,6 +633,24 @@ fn is_unsupported_xackdel(err: &RedisError) -> bool {
         .contains("unknown command")
 }
 
+fn is_blocking_command_timeout(err: &RedisError) -> bool {
+    err.is_timeout()
+}
+
+async fn connect_queue(config: &QueueConfig) -> Result<ConnectionManager> {
+    let client = redis::Client::open(config.redis_url.as_str())
+        .with_context(|| format!("invalid RESPONSE_ID_STORE_URL {}", config.redis_url))?;
+    let manager_config = ConnectionManagerConfig::new()
+        .set_response_timeout(Some(redis_response_timeout_for_block_ms(config.block_ms)));
+    ConnectionManager::new_with_config(client, manager_config)
+        .await
+        .with_context(|| "failed to connect to background queue")
+}
+
+fn redis_response_timeout_for_block_ms(block_ms: usize) -> Duration {
+    Duration::from_millis(block_ms.saturating_add(2_000) as u64)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -718,6 +775,18 @@ mod tests {
             Some("NOGROUP No such key or consumer group".to_string()),
         );
         assert!(is_nogroup(&err));
+    }
+
+    #[test]
+    fn redis_response_timeout_exceeds_block_ms() {
+        assert_eq!(
+            redis_response_timeout_for_block_ms(1_000),
+            Duration::from_millis(3_000)
+        );
+        assert_eq!(
+            redis_response_timeout_for_block_ms(5_000),
+            Duration::from_millis(7_000)
+        );
     }
 
     #[test]

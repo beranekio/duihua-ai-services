@@ -6,7 +6,7 @@ Duihua AI Services is an OpenAI API-compatible platform for serving open-source 
 
 - **Gateway (Rust, Axum)**: Provides OpenAI-compatible endpoints (`/v1/models`, `/v1/chat/completions`, `/v1/responses`, `/v1/embeddings`) and proxies requests to a model runtime.
 - **Inference runtime**: Optional bundled `vllm/vllm-openai` deployment for OSS model hosting.
-- **Responses API store (Valkey)**: Persists completed Responses API objects and conversation input so follow-up calls do not depend on inference runtime memory.
+- **Responses API store (gRPC)**: Persists completed Responses API objects and conversation input via the `responses-api-store` gRPC service (Valkey/Redis-backed).
 - **Background worker (Rust)**: Consumes a Valkey stream queue and completes `background=true` Responses API requests via synchronous upstream calls.
 - **Kubernetes-first deployment**: Packaged as a cloud-provider-neutral Helm chart.
 
@@ -14,7 +14,7 @@ Duihua AI Services is an OpenAI API-compatible platform for serving open-source 
 
 - `services/gateway`: Rust API gateway service.
 - `services/background-worker`: Valkey stream consumer for background Responses API requests.
-- `services/common`: Shared Rust library used by the gateway and background worker.
+
 - `charts/duihua-ai-services`: Helm chart for full deployment.
 - `scripts/`: Local kind bootstrap and deployment helpers.
 - `docs/`: Operational guidance.
@@ -72,21 +72,29 @@ curl http://127.0.0.1:8080/v1/responses \
 
 ## Responses API store
 
-The gateway can persist completed Responses API objects and their materialized conversation input in Valkey-compatible Redis storage. Follow-up creation requests with `previous_response_id` are expanded by the gateway into stateless upstream requests, while retrieval, deletion, and input-item requests are served directly from Valkey. The gateway does not enable or depend on vLLM's in-process Responses API store, so inference deployments can use multiple replicas and scale to zero between calls.
+The gateway can persist completed Responses API objects and their materialized conversation input through the `responses-api-store` gRPC service (Valkey/Redis-backed). Follow-up creation requests with `previous_response_id` are expanded by the gateway into stateless upstream requests, while retrieval, deletion, and input-item requests are served from the store service. The gateway does not enable or depend on vLLM's in-process Responses API store, so inference deployments can use multiple replicas and scale to zero between calls.
 
 Response persistence is optional and disabled by default. When disabled, follow-up `{response_id}` requests return the same not-found error shape as vLLM instead of being forwarded to an inference deployment. Creation requests that explicitly set `store: false` are never persisted by the gateway.
 
-To enable it with the chart-managed Valkey instance:
+To enable it with the chart-managed `responses-api-store` subchart and bundled Valkey:
 
 ```yaml
+responsesApiStoreService:
+  enabled: true
+
 gateway:
   responsesApiStore:
     enabled: true
   env:
-    responseIdStoreKeyPrefix: duihua:responses
     responseIdStoreTtlSeconds: "86400"
-valkey:
-  enabled: true
+
+responses-api-store:
+  store:
+    keyPrefix: responses-api-store:responses
+    ttlSeconds: 86400
+  valkey:
+    enabled: true
+
 inference:
   autoscaling:
     default:
@@ -95,11 +103,26 @@ inference:
         max: 1
 ```
 
-To use an external Valkey/Redis-compatible service instead, keep `valkey.enabled=false` and set `gateway.env.responseIdStoreUrl`.
+Gateway and background worker receive `RESPONSES_API_STORE_ENDPOINT` automatically. Redis connection settings belong to the `responses-api-store` subchart, not gateway env vars.
+
+To use an external Valkey/Redis-compatible service instead, keep the subchart enabled, disable bundled Valkey, and point the store service at your cluster:
+
+```yaml
+responsesApiStoreService:
+  enabled: true
+
+responses-api-store:
+  valkey:
+    enabled: false
+  redis:
+    url: rediss://your-redis.example:6379/0
+```
+
+For KEDA background-worker autoscaling against external Redis, also set `gateway.responsesApiStore.redisAddress` to a `host:port` KEDA can reach from its namespace (see issue #58 for wiring when bundled Valkey is disabled).
 
 For local Docker Compose, set `RESPONSES_API_STORE_ENABLED=true` when starting the stack to exercise persisted follow-up Responses API calls. Streaming responses are persisted after their `response.completed` event.
 
-With the Helm chart, `background=true` Responses API requests are enqueued on a Valkey stream and processed by the `duihua-background-worker` Deployment (synchronous upstream call per message, result written to Valkey). On rollout restart the worker drains in-flight jobs on SIGTERM before exit; set `backgroundWorker.terminationGracePeriodSeconds` above `backgroundWorker.upstreamTimeoutSeconds` plus `backgroundWorker.blockMs` and a safety margin (chart default 665s). The worker logs a recommended grace period at startup. Enable `gateway.responsesApiStore.enabled=true`, `backgroundWorker.enabled=true`, and `valkey.enabled=true` (or an external response store URL). The kind workflow (`values-kind.yaml`) enables the store, Valkey, background worker, queue settings, and KEDA stream-lag autoscaling for local end-to-end background completion testing.
+With the Helm chart, `background=true` Responses API requests are enqueued on a Valkey stream (via the store service) and processed by the `duihua-background-worker` Deployment (synchronous upstream call per message, result written back through the store service). On rollout restart the worker drains in-flight jobs on SIGTERM before exit; set `backgroundWorker.terminationGracePeriodSeconds` above `backgroundWorker.upstreamTimeoutSeconds` plus `backgroundWorker.blockMs` and a safety margin (chart default 665s). The worker logs a recommended grace period at startup. Enable `responsesApiStoreService.enabled=true`, `gateway.responsesApiStore.enabled=true`, and `backgroundWorker.enabled=true`. The kind workflow (`values-kind.yaml`) enables the store subchart, bundled Valkey, background worker, queue settings, and KEDA stream-lag autoscaling for local end-to-end background completion testing.
 
 ### KEDA autoscaling for background workers (optional)
 
@@ -117,7 +140,7 @@ backgroundWorker:
       max: 4
 ```
 
-Set `replicas.min` to `1` or higher to keep at least one worker pod warm. Use `activationLagCount: 0` so the first queued job wakes a worker (KEDA activates only when lag is strictly greater than this threshold). For external Redis with TLS or auth, use a `rediss://` `responseIdStoreUrl` and/or `backgroundWorker.autoscaling.passwordFromEnv` (env var name on the worker pod). Scale-to-zero uses `lagCount` and `activationLagCount`; the bundled chart Valkey image (9.x) satisfies the Redis 7+ requirement. When autoscaling is enabled, KEDA owns replica counts, the chart omits `spec.replicas`, and `backgroundWorker.replicaCount` is ignored. With `replicas.min: 0`, the gateway ensures the stream consumer group via the responses-api-store gRPC service on startup so KEDA can observe lag before the first worker pod starts. Lag-only scaling can scale down while upstream jobs are still running; tune `scaledownPeriod` or track issue #52 for graceful drain.
+Set `replicas.min` to `1` or higher to keep at least one worker pod warm. Use `activationLagCount: 0` so the first queued job wakes a worker (KEDA activates only when lag is strictly greater than this threshold). For external Redis with TLS or auth, configure `responses-api-store.redis.url` (for example `rediss://...`) on the store subchart and/or `backgroundWorker.autoscaling.passwordFromEnv` (env var name on the worker pod for KEDA). Scale-to-zero uses `lagCount` and `activationLagCount`; the bundled subchart Valkey image (9.x) satisfies the Redis 7+ requirement. When autoscaling is enabled, KEDA owns replica counts, the chart omits `spec.replicas`, and `backgroundWorker.replicaCount` is ignored. With `replicas.min: 0`, the gateway ensures the stream consumer group via the responses-api-store gRPC service on startup so KEDA can observe lag before the first worker pod starts. Lag-only scaling can scale down while upstream jobs are still running; tune `scaledownPeriod` or track issue #52 for graceful drain.
 
 ## Cloud-provider independence
 

@@ -36,6 +36,9 @@ jobs:
           rustup toolchain install stable --profile minimal --component rustfmt,clippy
           rustup default stable
 
+      - name: Install protoc
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
       - name: Check formatting
         run: cargo fmt --all -- --check
 
@@ -71,6 +74,9 @@ jobs:
 
       - name: Set up Helm
         uses: azure/setup-helm@v5
+
+      - name: Build chart dependencies
+        run: helm dependency build charts/duihua-ai-services
 
       - name: Lint chart
         run: helm lint charts/duihua-ai-services

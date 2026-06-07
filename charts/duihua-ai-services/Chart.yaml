@@ -6,6 +6,6 @@ version: 0.1.0
 appVersion: "0.1.0"
 dependencies:
   - name: responses-api-store
-    version: 0.0.0-d690b8b6179c22d34d065057d1bf8069b2d0eb93
+    version: 0.0.0-d24948a834366870ab65085c238009e45a1372b8
     repository: oci://ghcr.io/beranekio/charts
     condition: responsesApiStoreService.enabled

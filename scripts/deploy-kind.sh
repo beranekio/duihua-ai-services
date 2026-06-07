@@ -44,6 +44,10 @@ helm upgrade --install "${RELEASE_NAME}" "${CHART_PATH}" \
   --set inference.enabled="${INFERENCE_ENABLED}"
 
 RELEASE_NAME="${RELEASE_NAME}" NAMESPACE="${NAMESPACE}" TIMEOUT="${TIMEOUT}" \
+  KUBECTL_CONTEXT="${KUBECTL_CONTEXT}" \
+  "${ROOT_DIR}/scripts/wait-for-responses-api-store.sh"
+
+RELEASE_NAME="${RELEASE_NAME}" NAMESPACE="${NAMESPACE}" TIMEOUT="${TIMEOUT}" \
   KUBECTL_CONTEXT="${KUBECTL_CONTEXT}" GATEWAY_DEPLOYMENT_REQUIRED=true \
   "${ROOT_DIR}/scripts/restart-gateway-deployment.sh"
 

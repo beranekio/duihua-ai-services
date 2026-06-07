@@ -14,6 +14,33 @@ use tokio::task::JoinSet;
 
 use crate::worker::{self, EntrySource, ProcessContext, ProcessOutcome};
 
+const ENSURE_CONSUMER_GROUP_ATTEMPTS: usize = 30;
+const ENSURE_CONSUMER_GROUP_RETRY_DELAY: Duration = Duration::from_secs(2);
+
+async fn ensure_background_consumer_group(
+    response_store: &StoreHandle,
+    consumer_group: &str,
+) -> Result<()> {
+    let mut last_err = None;
+    for attempt in 1..=ENSURE_CONSUMER_GROUP_ATTEMPTS {
+        match response_store
+            .ensure_consumer_group(consumer_group, "0")
+            .await
+        {
+            Ok(_) => return Ok(()),
+            Err(err) => {
+                last_err = Some(err);
+                if attempt < ENSURE_CONSUMER_GROUP_ATTEMPTS {
+                    tokio::time::sleep(ENSURE_CONSUMER_GROUP_RETRY_DELAY).await;
+                }
+            }
+        }
+    }
+
+    Err(last_err.expect("ensure_consumer_group error after retries"))
+        .context("failed to ensure background queue consumer group")
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct QueueMessage {
     pub stream_id: String,
@@ -66,10 +93,7 @@ pub async fn run() -> Result<()> {
     spawn_shutdown_listener(shutdown_tx);
 
     let response_store = connect_from_env().await?;
-    response_store
-        .ensure_consumer_group(&config.consumer_group, "0")
-        .await
-        .context("failed to ensure background queue consumer group")?;
+    ensure_background_consumer_group(&response_store, &config.consumer_group).await?;
     eprintln!(
         "background worker startup: recommended terminationGracePeriodSeconds={}",
         recommended_termination_grace_period_seconds_for_config(&config)

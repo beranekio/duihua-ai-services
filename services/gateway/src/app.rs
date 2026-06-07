@@ -1,7 +1,7 @@
-use std::{env, sync::Arc};
+use std::{env, sync::Arc, time::Duration};
 
 use crate::config::parse_bool_env;
-use crate::responses_store::connect_from_env;
+use crate::responses_store::{connect_from_env, StoreHandle};
 use anyhow::{Context, Result};
 use reqwest::Client;
 use tracing::info;
@@ -11,6 +11,33 @@ use crate::{
     routes,
     state::AppState,
 };
+
+const ENSURE_CONSUMER_GROUP_ATTEMPTS: usize = 30;
+const ENSURE_CONSUMER_GROUP_RETRY_DELAY: Duration = Duration::from_secs(2);
+
+async fn ensure_background_consumer_group(
+    response_store: &StoreHandle,
+    consumer_group: &str,
+) -> Result<()> {
+    let mut last_err = None;
+    for attempt in 1..=ENSURE_CONSUMER_GROUP_ATTEMPTS {
+        match response_store
+            .ensure_consumer_group(consumer_group, "0")
+            .await
+        {
+            Ok(_) => return Ok(()),
+            Err(err) => {
+                last_err = Some(err);
+                if attempt < ENSURE_CONSUMER_GROUP_ATTEMPTS {
+                    tokio::time::sleep(ENSURE_CONSUMER_GROUP_RETRY_DELAY).await;
+                }
+            }
+        }
+    }
+
+    Err(last_err.expect("ensure_consumer_group error after retries"))
+        .context("failed to ensure background queue consumer group")
+}
 
 pub async fn run() -> Result<()> {
     init_rustls_provider();
@@ -37,10 +64,7 @@ pub async fn run() -> Result<()> {
         if let Some(response_store) = &response_store {
             let consumer_group = env::var("BACKGROUND_QUEUE_CONSUMER_GROUP")
                 .unwrap_or_else(|_| "duihua-background".to_string());
-            response_store
-                .ensure_consumer_group(&consumer_group, "0")
-                .await
-                .context("failed to ensure background queue consumer group")?;
+            ensure_background_consumer_group(response_store, &consumer_group).await?;
         }
     }
 

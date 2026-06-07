@@ -33,4 +33,25 @@ if kubectl get deployment "${valkey_deployment}" -n "${NAMESPACE}" >/dev/null 2>
     -n "${NAMESPACE}" --timeout="${TIMEOUT}"
 fi
 
+timeout_seconds="${TIMEOUT%s}"
+if [[ ! "${timeout_seconds}" =~ ^[0-9]+$ ]]; then
+  timeout_seconds=300
+fi
+
+echo "Waiting for responses-api-store gRPC health probe..."
+deadline=$((SECONDS + timeout_seconds))
+while (( SECONDS < deadline )); do
+  if kubectl exec "deployment/${store_deployment}" -n "${NAMESPACE}" -- \
+    /responses-api-store-probe >/dev/null 2>&1; then
+    echo "responses-api-store health probe OK."
+    break
+  fi
+  sleep 2
+done
+
+if (( SECONDS >= deadline )); then
+  echo "responses-api-store health probe did not succeed within ${TIMEOUT}" >&2
+  exit 1
+fi
+
 echo "responses-api-store dependencies are available."

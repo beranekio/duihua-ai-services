@@ -55,6 +55,10 @@ RELEASE_NAME="${RELEASE_NAME}" NAMESPACE="${NAMESPACE}" TIMEOUT="${TIMEOUT}" \
   KUBECTL_CONTEXT="${KUBECTL_CONTEXT}" \
   "${ROOT_DIR}/scripts/restart-background-worker-deployment.sh"
 
+RELEASE_NAME="${RELEASE_NAME}" NAMESPACE="${NAMESPACE}" TIMEOUT="${TIMEOUT}" \
+  KUBECTL_CONTEXT="${KUBECTL_CONTEXT}" \
+  "${ROOT_DIR}/scripts/wait-for-background-worker-ready.sh"
+
 if [[ "${INFERENCE_ENABLED}" == "true" ]]; then
   echo "Checking rollout status for inference deployments..."
   inference_deployments="$(kubectl get deployment -n "${NAMESPACE}" -o name \

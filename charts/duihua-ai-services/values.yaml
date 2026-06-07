@@ -62,7 +62,8 @@ backgroundWorker:
   # Used by the gateway for stale-response reconciliation on GET /v1/responses/{id}.
   staleSeconds: 3600
   consumerGroup: duihua-background
-  blockMs: 5000
+  # Keep below the responses-api-store Valkey client response timeout (500ms).
+  blockMs: 400
   pendingRetrySeconds: 30
   # Maximum simultaneous upstream calls per worker pod.
   maxConcurrentJobs: 1

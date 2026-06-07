@@ -1,7 +1,4 @@
-use std::collections::HashMap;
-
-#[cfg(test)]
-use duihua_common::parse_bool_env;
+use std::{collections::HashMap, env};
 
 pub fn init_rustls_provider() {
     if rustls::crypto::CryptoProvider::get_default().is_none() {
@@ -24,6 +21,17 @@ pub fn parse_model_upstreams(value: Option<String>) -> HashMap<String, String> {
         })
         .filter(|(model, upstream)| !model.is_empty() && !upstream.is_empty())
         .collect()
+}
+
+pub fn parse_bool_env(name: &str, default: bool) -> bool {
+    env::var(name)
+        .ok()
+        .and_then(|value| match value.to_ascii_lowercase().as_str() {
+            "1" | "true" | "yes" | "on" => Some(true),
+            "0" | "false" | "no" | "off" => Some(false),
+            _ => None,
+        })
+        .unwrap_or(default)
 }
 
 #[cfg(test)]

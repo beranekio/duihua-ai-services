@@ -1,3 +1,14 @@
+responsesApiStoreService:
+  enabled: true
+
+responses-api-store:
+  valkey:
+    enabled: true
+    image:
+      repository: valkey/valkey
+      tag: "9.1.0-alpine"
+      pullPolicy: IfNotPresent
+
 gateway:
   image:
     repository: duihua-gateway
@@ -15,8 +26,6 @@ gateway:
       cpu: 500m
       memory: 256Mi
   env:
-    responseIdStoreUrl: redis://valkey:6379
-    responseIdStoreKeyPrefix: duihua:responses
     responseIdStoreTtlSeconds: "86400"
     defaultModel: HuggingFaceTB/SmolLM2-135M-Instruct
     upstreamBaseUrl: http://127.0.0.1:9/v1
@@ -31,11 +40,10 @@ backgroundWorker:
     repository: duihua-background-worker
     tag: kind
     pullPolicy: IfNotPresent
-  streamKey: duihua:responses:background
   staleSeconds: 3600
   # Faster pending retries for local smoke tests (live deliveries retry once before processing).
   pendingRetrySeconds: 5
-  # Keep below the redis-rs client response timeout so blocking reads do not error-loop.
+  # Keep below the gRPC claim block timeout so blocking reads do not error-loop.
   blockMs: 1000
   autoscaling:
     enabled: true
@@ -95,19 +103,3 @@ inference:
 
 serviceAccount:
   create: true
-
-valkey:
-  enabled: true
-  image:
-    repository: valkey/valkey
-    tag: "9.1.0-alpine"
-    pullPolicy: IfNotPresent
-  service:
-    port: 6379
-  resources:
-    requests:
-      cpu: 50m
-      memory: 64Mi
-    limits:
-      cpu: 250m
-      memory: 256Mi

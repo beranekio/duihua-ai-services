@@ -323,7 +323,7 @@ mod tests {
             client: Client::new(),
             responses_api_store_enabled: false,
             response_store: None,
-            background_queue: None,
+            background_jobs_enabled: false,
         });
         let tracker = ResponseTracker::new(state, "http://default:8000/v1".to_string(), Vec::new());
 
@@ -349,7 +349,7 @@ mod tests {
             client: Client::new(),
             responses_api_store_enabled: false,
             response_store: None,
-            background_queue: None,
+            background_jobs_enabled: false,
         });
         let tracker = ResponseTracker::new(state, "http://default:8000/v1".to_string(), Vec::new());
 
@@ -379,7 +379,7 @@ mod tests {
             client: Client::new(),
             responses_api_store_enabled: false,
             response_store: None,
-            background_queue: None,
+            background_jobs_enabled: false,
         });
         let tracker = ResponseTracker::new(state, "http://default:8000/v1".to_string(), Vec::new());
 
@@ -416,7 +416,7 @@ mod tests {
             client: Client::new(),
             responses_api_store_enabled: false,
             response_store: None,
-            background_queue: None,
+            background_jobs_enabled: false,
         });
         let tracker = ResponseTracker::new(state, "http://default:8000/v1".to_string(), Vec::new());
 
@@ -445,7 +445,7 @@ mod tests {
             client: Client::new(),
             responses_api_store_enabled: false,
             response_store: None,
-            background_queue: None,
+            background_jobs_enabled: false,
         };
         let headers = HeaderMap::new();
         let req =
@@ -482,7 +482,7 @@ mod tests {
             client: Client::new(),
             responses_api_store_enabled: false,
             response_store: None,
-            background_queue: None,
+            background_jobs_enabled: false,
         };
         let mut headers = HeaderMap::new();
         headers.insert("x-api-key", "dummy".parse().unwrap());
@@ -530,7 +530,7 @@ mod tests {
             client: Client::new(),
             responses_api_store_enabled: false,
             response_store: None,
-            background_queue: None,
+            background_jobs_enabled: false,
         };
         let mut headers = HeaderMap::new();
         headers.insert("x-api-key", "client-secret".parse().unwrap());

@@ -1,13 +1,14 @@
 use std::{env, sync::Arc};
 
+use crate::config::parse_bool_env;
+use crate::responses_store::connect_from_env;
 use anyhow::{Context, Result};
-use duihua_common::{parse_bool_env, response_store_from_env};
 use reqwest::Client;
 use tracing::info;
 
 use crate::{
     config::{init_rustls_provider, parse_model_upstreams},
-    queue, routes,
+    routes,
     state::AppState,
 };
 
@@ -24,13 +25,10 @@ pub async fn run() -> Result<()> {
     let upstream_api_key = env::var("UPSTREAM_API_KEY").ok();
     let model_upstreams = parse_model_upstreams(env::var("MODEL_UPSTREAMS").ok());
     let responses_api_store_enabled = parse_bool_env("RESPONSES_API_STORE_ENABLED", false);
+    let background_jobs_enabled =
+        responses_api_store_enabled && parse_bool_env("RESPONSES_BACKGROUND_ENABLED", false);
     let response_store = if responses_api_store_enabled {
-        Some(response_store_from_env().await?)
-    } else {
-        None
-    };
-    let background_queue = if responses_api_store_enabled {
-        queue::background_queue_from_env().await?
+        Some(connect_from_env().await?)
     } else {
         None
     };
@@ -42,8 +40,8 @@ pub async fn run() -> Result<()> {
         upstream_api_key,
         client: Client::new(),
         responses_api_store_enabled,
+        background_jobs_enabled,
         response_store,
-        background_queue,
     });
 
     let app = routes::router(state);

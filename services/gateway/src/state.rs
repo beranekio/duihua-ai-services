@@ -1,9 +1,7 @@
 use std::collections::HashMap;
 
-use duihua_common::ResponseStore;
+use crate::responses_store::StoreHandle;
 use reqwest::Client;
-
-use crate::queue::BackgroundQueue;
 
 pub struct AppState {
     pub upstream_base: String,
@@ -12,8 +10,8 @@ pub struct AppState {
     pub upstream_api_key: Option<String>,
     pub client: Client,
     pub responses_api_store_enabled: bool,
-    pub response_store: Option<ResponseStore>,
-    pub background_queue: Option<BackgroundQueue>,
+    pub background_jobs_enabled: bool,
+    pub response_store: Option<StoreHandle>,
 }
 
 pub fn upstream_for_model<'a>(state: &'a AppState, model: &str) -> &'a str {
@@ -43,8 +41,8 @@ mod tests {
             upstream_api_key: None,
             client: Client::new(),
             responses_api_store_enabled: false,
+            background_jobs_enabled: false,
             response_store: None,
-            background_queue: None,
         };
 
         assert_eq!(

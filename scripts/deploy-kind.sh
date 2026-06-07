@@ -29,6 +29,8 @@ kubectl() {
   fi
 }
 
+"${ROOT_DIR}/scripts/update-helm-dependencies.sh"
+
 echo "Deploying Helm release '${RELEASE_NAME}' into namespace '${NAMESPACE}'..."
 helm upgrade --install "${RELEASE_NAME}" "${CHART_PATH}" \
   --kube-context "${KUBECTL_CONTEXT}" \

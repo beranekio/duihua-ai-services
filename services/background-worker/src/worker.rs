@@ -1,7 +1,9 @@
 use std::{env, time::Duration};
 
 use anyhow::{Context, Result};
-use duihua_common::{stored_response_status, ResponseStore, StoredResponse};
+use responses_api_store_client::{stored_response_status, StoredResponse};
+
+use crate::responses_store::StoreHandle;
 use reqwest::Client as HttpClient;
 use serde_json::{json, Value};
 
@@ -39,7 +41,7 @@ pub struct ProcessContext {
 }
 
 pub async fn process_response(
-    response_store: &ResponseStore,
+    response_store: &StoreHandle,
     response_id: &str,
     ctx: ProcessContext,
 ) -> Result<ProcessOutcome> {
@@ -173,7 +175,7 @@ fn is_stale_reclaim(ctx: ProcessContext) -> bool {
 }
 
 async fn outcome_after_failed_claim(
-    response_store: &ResponseStore,
+    response_store: &StoreHandle,
     response_id: &str,
     ctx: ProcessContext,
 ) -> Result<ProcessOutcome> {
@@ -202,7 +204,7 @@ async fn outcome_after_failed_claim(
 /// not get overwritten. Returns `None` when the response is terminal, missing, or
 /// already claimed by another worker.
 async fn claim_for_processing(
-    response_store: &ResponseStore,
+    response_store: &StoreHandle,
     response_id: &str,
 ) -> Result<Option<ClaimedWork>> {
     let Some(stored) = response_store.load(response_id).await? else {
@@ -291,7 +293,7 @@ fn merge_completion(current: &StoredResponse, mut completion: StoredResponse) ->
 }
 
 async fn store_completion(
-    response_store: &ResponseStore,
+    response_store: &StoreHandle,
     response_id: &str,
     stored: StoredResponse,
 ) -> Result<()> {
@@ -308,11 +310,7 @@ async fn store_completion(
         .context("failed to store completed background response")
 }
 
-async fn mark_failed(
-    response_store: &ResponseStore,
-    response_id: &str,
-    message: &str,
-) -> Result<()> {
+async fn mark_failed(response_store: &StoreHandle, response_id: &str, message: &str) -> Result<()> {
     let Some(mut stored) = response_store.load(response_id).await? else {
         return Ok(());
     };
@@ -338,7 +336,7 @@ async fn mark_failed(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use duihua_common::StoredResponse;
+    use responses_api_store_client::StoredResponse;
 
     #[test]
     fn skips_terminal_statuses() {

@@ -1,5 +1,5 @@
 [workspace]
-members = ["common", "gateway", "background-worker"]
+members = ["gateway", "background-worker"]
 resolver = "2"
 
 [workspace.package]

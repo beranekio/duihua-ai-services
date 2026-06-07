@@ -8,16 +8,31 @@ services:
       UPSTREAM_BASE_URL: http://vllm:8000/v1
       DEFAULT_MODEL: Qwen/Qwen3.5-0.8B
       RESPONSES_API_STORE_ENABLED: ${RESPONSES_API_STORE_ENABLED:-false}
-      RESPONSE_ID_STORE_URL: redis://valkey:6379
-      RESPONSE_ID_STORE_KEY_PREFIX: duihua:responses
+      RESPONSES_API_STORE_ENDPOINT: http://responses-api-store:50051
+      RESPONSES_BACKGROUND_ENABLED: ${RESPONSES_BACKGROUND_ENABLED:-false}
       RESPONSE_ID_STORE_TTL_SECONDS: "86400"
     ports:
       - "8080:8080"
     depends_on:
-      valkey:
-        condition: service_healthy
+      responses-api-store:
+        condition: service_started
       vllm:
         condition: service_started
+
+  responses-api-store:
+    image: ghcr.io/beranekio/responses-api-store:latest
+    environment:
+      GRPC_LISTEN_ADDR: 0.0.0.0:50051
+      RESPONSE_ID_STORE_URL: redis://valkey:6379
+      RESPONSE_ID_STORE_KEY_PREFIX: responses-api-store:responses
+      RESPONSE_ID_STORE_TTL_SECONDS: "86400"
+      BACKGROUND_QUEUE_STREAM_KEY: responses-api-store:background
+      BACKGROUND_RESPONSE_STALE_SECONDS: "3600"
+    ports:
+      - "50051:50051"
+    depends_on:
+      valkey:
+        condition: service_healthy
 
   valkey:
     image: valkey/valkey:9.1.0-alpine

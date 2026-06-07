@@ -1,9 +1,9 @@
 use axum::response::IntoResponse;
-use duihua_common::StoredResponse;
+use responses_api_store_client::StoredResponse;
 use serde_json::Value;
 use tracing::error;
 
-use crate::{queue::unix_seconds_now, state::AppState};
+use crate::state::AppState;
 
 pub async fn enqueue_background_response(
     state: &AppState,
@@ -23,36 +23,28 @@ pub async fn enqueue_background_response(
             .into_response());
     };
 
-    let stored = StoredResponse {
-        upstream: upstream.clone(),
-        response: queued_response.clone(),
-        input,
-        pending_upstream_request: Some(upstream_request),
-        upstream_authorization,
-        enqueued_at: Some(unix_seconds_now()),
-    };
-    if let Err(e) = response_store.store(&response_id, &stored).await {
-        error!("failed to store queued background response {response_id}: {e}");
-        return Err((
-            axum::http::StatusCode::BAD_GATEWAY,
-            "response id store write failed",
-        )
-            .into_response());
-    }
-
-    let Some(background_queue) = &state.background_queue else {
+    if !state.background_jobs_enabled {
         error!("background responses require queue support");
-        let _ = response_store.delete(&response_id).await;
         return Err((
             axum::http::StatusCode::SERVICE_UNAVAILABLE,
             "background responses require queue support",
         )
             .into_response());
-    };
+    }
 
-    if let Err(e) = background_queue.enqueue(&response_id).await {
+    let stored = StoredResponse {
+        upstream,
+        response: queued_response,
+        input,
+        pending_upstream_request: Some(upstream_request),
+        upstream_authorization,
+        enqueued_at: None,
+    };
+    if let Err(e) = response_store
+        .enqueue_background_job(&response_id, &stored)
+        .await
+    {
         error!("failed to enqueue background response {response_id}: {e}");
-        let _ = response_store.delete(&response_id).await;
         return Err((
             axum::http::StatusCode::BAD_GATEWAY,
             "failed to enqueue background response",
@@ -66,7 +58,7 @@ pub async fn enqueue_background_response(
 pub async fn finalize_background_deletion(
     state: &AppState,
     response_id: &str,
-    stored: &StoredResponse,
+    _stored: &StoredResponse,
 ) -> Result<(), axum::response::Response> {
     let Some(response_store) = &state.response_store else {
         error!("responses API store is enabled but no response store is configured");
@@ -76,28 +68,6 @@ pub async fn finalize_background_deletion(
         )
             .into_response());
     };
-
-    if duihua_common::is_in_flight_background(stored) {
-        let mut tombstone = stored.clone();
-        tombstone.response = serde_json::json!({
-            "id": response_id,
-            "object": "response",
-            "status": "deleted",
-            "background": true,
-            "deleted": true
-        });
-        tombstone.pending_upstream_request = None;
-        tombstone.upstream_authorization = None;
-        if let Err(e) = response_store.store(response_id, &tombstone).await {
-            error!("failed to tombstone deleted background response {response_id}: {e}");
-            return Err((
-                axum::http::StatusCode::BAD_GATEWAY,
-                "response store write failed",
-            )
-                .into_response());
-        }
-        return Ok(());
-    }
 
     if let Err(e) = response_store.delete(response_id).await {
         error!("failed to delete response {response_id}: {e}");
@@ -111,7 +81,7 @@ pub async fn finalize_background_deletion(
     Ok(())
 }
 
-pub use duihua_common::{
+pub use responses_api_store_client::{
     build_cancelled_response, build_queued_response, build_upstream_request, generate_response_id,
     is_in_flight_background, stored_response_status,
 };

@@ -40,19 +40,15 @@ spec:
               value: {{ .Values.gateway.env.upstreamBaseUrl | quote }}
             - name: RESPONSES_API_STORE_ENABLED
               value: {{ include "duihua.responsesApiStore.enabled" . | quote }}
-            - name: RESPONSE_ID_STORE_URL
-              value: {{ include "duihua.responseIdStoreUrl" . | quote }}
-            - name: RESPONSE_ID_STORE_KEY_PREFIX
-              value: {{ .Values.gateway.env.responseIdStoreKeyPrefix | quote }}
+            {{- if eq (include "duihua.responsesApiStore.enabled" .) "true" }}
+            - name: RESPONSES_API_STORE_ENDPOINT
+              value: {{ include "duihua.responsesApiStoreEndpoint" . | quote }}
             - name: RESPONSE_ID_STORE_TTL_SECONDS
               value: {{ .Values.gateway.env.responseIdStoreTtlSeconds | quote }}
             {{- if eq (include "duihua.background.enabled" .) "true" }}
             - name: RESPONSES_BACKGROUND_ENABLED
               value: "true"
-            - name: BACKGROUND_QUEUE_STREAM_KEY
-              value: {{ include "duihua.background.streamKey" . | quote }}
-            - name: BACKGROUND_RESPONSE_STALE_SECONDS
-              value: {{ include "duihua.background.staleSeconds" . | quote }}
+            {{- end }}
             {{- end }}
             - name: MODEL_UPSTREAMS
               {{ if .Values.inference.enabled }}

@@ -28,6 +28,8 @@ spec:
           env:
             - name: RESPONSES_API_STORE_ENDPOINT
               value: {{ include "duihua.responsesApiStoreEndpoint" . | quote }}
+            - name: RESPONSE_ID_STORE_TTL_SECONDS
+              value: {{ .Values.gateway.env.responseIdStoreTtlSeconds | quote }}
             - name: BACKGROUND_QUEUE_CONSUMER_GROUP
               value: {{ .Values.backgroundWorker.consumerGroup | quote }}
             - name: BACKGROUND_QUEUE_CONSUMER_NAME

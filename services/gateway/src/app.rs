@@ -33,6 +33,17 @@ pub async fn run() -> Result<()> {
         None
     };
 
+    if background_jobs_enabled {
+        if let Some(response_store) = &response_store {
+            let consumer_group = env::var("BACKGROUND_QUEUE_CONSUMER_GROUP")
+                .unwrap_or_else(|_| "duihua-background".to_string());
+            response_store
+                .ensure_consumer_group(&consumer_group, "0")
+                .await
+                .context("failed to ensure background queue consumer group")?;
+        }
+    }
+
     let state = Arc::new(AppState {
         upstream_base,
         model_upstreams,

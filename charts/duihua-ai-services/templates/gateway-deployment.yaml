@@ -48,6 +48,8 @@ spec:
             {{- if eq (include "duihua.background.enabled" .) "true" }}
             - name: RESPONSES_BACKGROUND_ENABLED
               value: "true"
+            - name: BACKGROUND_QUEUE_CONSUMER_GROUP
+              value: {{ .Values.backgroundWorker.consumerGroup | quote }}
             {{- end }}
             {{- end }}
             - name: MODEL_UPSTREAMS

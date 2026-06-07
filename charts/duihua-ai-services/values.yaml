@@ -91,9 +91,9 @@ backgroundWorker:
       max: 4
     scaledObjectAnnotations: {}
   queueBootstrap:
-    # Helm hook Job that creates the stream consumer group when autoscaling uses min: 0.
-    # Uses the chart Valkey image when valkey.enabled=true; otherwise configure an image
-    # reachable from your cluster (for example a mirrored redis image in air-gapped envs).
+    # Deprecated: the gateway ensures the stream consumer group via gRPC on startup when
+    # background jobs are enabled (including scale-to-zero with replicas.min: 0). Values
+    # below are unused; kept for a possible future Helm hook if needed.
     image:
       repository: redis
       tag: 7-alpine

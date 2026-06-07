@@ -1,6 +1,6 @@
 use std::env;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use responses_api_store_client::{
     ClaimBackgroundJobsRequest, ClaimBackgroundJobsResult, Client, ClientError, StoredResponse,
 };
@@ -23,10 +23,7 @@ pub async fn connect_from_env() -> Result<StoreHandle> {
         .and_then(|value| value.parse().ok())
         .unwrap_or(86_400);
 
-    let channel = Endpoint::from_shared(endpoint.clone())?
-        .connect()
-        .await
-        .with_context(|| format!("failed to connect to responses API store at {endpoint}"))?;
+    let channel = Endpoint::from_shared(endpoint)?.connect_lazy();
 
     Ok(StoreHandle {
         channel,

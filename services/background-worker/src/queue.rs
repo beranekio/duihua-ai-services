@@ -200,7 +200,7 @@ async fn drain_pending_at_startup(
             break;
         };
 
-        match claim_jobs(response_store, config, config.max_concurrent_jobs as u32).await {
+        match claim_jobs(response_store, config, 1).await {
             Ok(Some(message)) => {
                 if let Err(err) = handle_message(
                     config,

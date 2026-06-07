@@ -29,6 +29,8 @@ kubectl() {
   fi
 }
 
+"${ROOT_DIR}/scripts/update-helm-dependencies.sh"
+
 echo "Deploying Helm release '${RELEASE_NAME}' into namespace '${NAMESPACE}'..."
 helm upgrade --install "${RELEASE_NAME}" "${CHART_PATH}" \
   --kube-context "${KUBECTL_CONTEXT}" \
@@ -42,12 +44,20 @@ helm upgrade --install "${RELEASE_NAME}" "${CHART_PATH}" \
   --set inference.enabled="${INFERENCE_ENABLED}"
 
 RELEASE_NAME="${RELEASE_NAME}" NAMESPACE="${NAMESPACE}" TIMEOUT="${TIMEOUT}" \
+  KUBECTL_CONTEXT="${KUBECTL_CONTEXT}" \
+  "${ROOT_DIR}/scripts/wait-for-responses-api-store.sh"
+
+RELEASE_NAME="${RELEASE_NAME}" NAMESPACE="${NAMESPACE}" TIMEOUT="${TIMEOUT}" \
   KUBECTL_CONTEXT="${KUBECTL_CONTEXT}" GATEWAY_DEPLOYMENT_REQUIRED=true \
   "${ROOT_DIR}/scripts/restart-gateway-deployment.sh"
 
 RELEASE_NAME="${RELEASE_NAME}" NAMESPACE="${NAMESPACE}" TIMEOUT="${TIMEOUT}" \
   KUBECTL_CONTEXT="${KUBECTL_CONTEXT}" \
   "${ROOT_DIR}/scripts/restart-background-worker-deployment.sh"
+
+RELEASE_NAME="${RELEASE_NAME}" NAMESPACE="${NAMESPACE}" TIMEOUT="${TIMEOUT}" \
+  KUBECTL_CONTEXT="${KUBECTL_CONTEXT}" \
+  "${ROOT_DIR}/scripts/wait-for-background-worker-ready.sh"
 
 if [[ "${INFERENCE_ENABLED}" == "true" ]]; then
   echo "Checking rollout status for inference deployments..."

@@ -32,7 +32,7 @@ spec:
         enableTLS: "true"
         {{- end }}
         {{- $databaseIndex := include "duihua.responseIdStoreDatabaseIndex" . -}}
-        {{- if and (not .Values.valkey.enabled) (ne $databaseIndex "0") }}
+        {{- if ne $databaseIndex "0" }}
         databaseIndex: {{ $databaseIndex | quote }}
         {{- end }}
         {{- with $autoscaling.passwordFromEnv }}

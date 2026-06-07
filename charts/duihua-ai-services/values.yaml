@@ -1,3 +1,27 @@
+responsesApiStoreService:
+  # Deploy the beranekio/responses-api-store gRPC service subchart from GHCR
+  # (oci://ghcr.io/beranekio/charts). Gateway and background worker talk to
+  # this service instead of Valkey directly.
+  enabled: false
+
+responses-api-store:
+  # Image repository/tag are set by the published OCI chart (git-sha tag).
+  store:
+    keyPrefix: responses-api-store:responses
+    ttlSeconds: 86400
+    staleSeconds: 3600
+  backgroundQueue:
+    streamKey: responses-api-store:background
+    streamMaxlen: 10000
+  valkey:
+    enabled: true
+    image:
+      repository: valkey/valkey
+      tag: "9.1.0-alpine"
+      pullPolicy: IfNotPresent
+    service:
+      port: 6379
+
 gateway:
   replicaCount: 1
   image:
@@ -15,16 +39,16 @@ gateway:
       cpu: 1000m
       memory: 1Gi
   env:
-    responseIdStoreUrl: redis://valkey:6379
-    responseIdStoreKeyPrefix: duihua:responses
     responseIdStoreTtlSeconds: "86400"
     defaultModel: google/gemma-4-31B-it
     upstreamBaseUrl: http://vllm:8000/v1
   responsesApiStore:
-    # Persist completed Responses API objects and conversation input in Valkey
-    # from the gateway. This does not enable vLLM's in-memory response store, so
-    # inference deployments may use multiple replicas and scale to zero.
+    # Persist completed Responses API objects via the responses-api-store gRPC
+    # service. This does not enable vLLM's in-memory response store, so inference
+    # deployments may use multiple replicas and scale to zero.
     enabled: false
+    # Override the gRPC endpoint; when empty, uses the subchart Service.
+    endpoint: ""
 
 backgroundWorker:
   # Consume background=true Responses API jobs from a Valkey stream when the
@@ -35,11 +59,11 @@ backgroundWorker:
     repository: ghcr.io/example/duihua-background-worker
     tag: "0.1.0"
     pullPolicy: IfNotPresent
-  streamKey: duihua:responses:background
   # Used by the gateway for stale-response reconciliation on GET /v1/responses/{id}.
   staleSeconds: 3600
   consumerGroup: duihua-background
-  blockMs: 5000
+  # Keep below the responses-api-store Valkey client response timeout (500ms).
+  blockMs: 400
   pendingRetrySeconds: 30
   # Maximum simultaneous upstream calls per worker pod.
   maxConcurrentJobs: 1
@@ -68,9 +92,9 @@ backgroundWorker:
       max: 4
     scaledObjectAnnotations: {}
   queueBootstrap:
-    # Helm hook Job that creates the stream consumer group when autoscaling uses min: 0.
-    # Uses the chart Valkey image when valkey.enabled=true; otherwise configure an image
-    # reachable from your cluster (for example a mirrored redis image in air-gapped envs).
+    # Deprecated: the gateway ensures the stream consumer group via gRPC on startup when
+    # background jobs are enabled (including scale-to-zero with replicas.min: 0). Values
+    # below are unused; kept for a possible future Helm hook if needed.
     image:
       repository: redis
       tag: 7-alpine
@@ -132,22 +156,6 @@ inference:
         # HTTP add-on. This annotation lets you override the default.
       scaledObjectAnnotations: {}
       annotations: {}
-
-valkey:
-  enabled: false
-  image:
-    repository: valkey/valkey
-    tag: "9.1.0-alpine"
-    pullPolicy: IfNotPresent
-  service:
-    port: 6379
-  resources:
-    requests:
-      cpu: 50m
-      memory: 64Mi
-    limits:
-      cpu: 250m
-      memory: 256Mi
 
 serviceAccount:
   create: false

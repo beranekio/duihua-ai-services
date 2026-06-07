@@ -4,3 +4,8 @@ description: OpenAI API compatible self-hosted AI services for Kubernetes
 type: application
 version: 0.1.0
 appVersion: "0.1.0"
+dependencies:
+  - name: responses-api-store
+    version: 0.0.0-d690b8b6179c22d34d065057d1bf8069b2d0eb93
+    repository: oci://ghcr.io/beranekio/charts
+    condition: responsesApiStoreService.enabled

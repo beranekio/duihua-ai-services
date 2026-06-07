@@ -72,6 +72,10 @@ wait_for_background_worker() {
     exit 1
   fi
   echo "Background worker deployment available"
+
+  RELEASE_NAME="${RELEASE_NAME}" NAMESPACE="${NAMESPACE}" TIMEOUT="${wait_timeout}s" \
+    KUBECTL_CONTEXT="${KUBECTL_CONTEXT}" \
+    "${ROOT_DIR}/scripts/wait-for-background-worker-ready.sh"
 }
 
 post_response() {

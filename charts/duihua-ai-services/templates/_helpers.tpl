@@ -26,37 +26,60 @@
 {{- end -}}
 {{- end -}}
 
-{{- define "duihua.responseIdStoreUrl" -}}
-{{- if .Values.valkey.enabled -}}
-redis://{{ include "duihua.fullname" . }}-valkey:{{ .Values.valkey.service.port }}
+{{- define "duihua.responsesApiStoreService.fullname" -}}
+{{- printf "%s-responses-api-store" .Release.Name | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+
+{{- define "duihua.responsesApiStoreService.enabled" -}}
+{{- if .Values.responsesApiStoreService.enabled -}}
+true
 {{- else -}}
-{{- .Values.gateway.env.responseIdStoreUrl -}}
+false
+{{- end -}}
+{{- end -}}
+
+{{- define "duihua.responsesApiStoreEndpoint" -}}
+{{- if .Values.gateway.responsesApiStore.endpoint -}}
+{{- .Values.gateway.responsesApiStore.endpoint -}}
+{{- else -}}
+{{- printf "http://%s:%d" (include "duihua.responsesApiStoreService.fullname" .) (int (index .Values "responses-api-store").grpc.port) -}}
+{{- end -}}
+{{- end -}}
+
+{{- define "duihua.background.streamKey" -}}
+{{- if eq (include "duihua.responsesApiStoreService.enabled" .) "true" -}}
+{{- (index .Values "responses-api-store").backgroundQueue.streamKey -}}
+{{- else -}}
+{{- $backgroundJobs := get .Values.gateway.responsesApiStore "backgroundJobs" | default dict -}}
+{{- if hasKey $backgroundJobs "streamKey" -}}
+{{- get $backgroundJobs "streamKey" -}}
+{{- else -}}
+{{- .Values.backgroundWorker.streamKey | default "responses-api-store:background" -}}
+{{- end -}}
 {{- end -}}
 {{- end -}}
 
 {{- define "duihua.responseIdStoreAddress" -}}
-{{- if .Values.valkey.enabled -}}
-{{- printf "%s-valkey.%s.svc.cluster.local:%v" (include "duihua.fullname" .) .Release.Namespace .Values.valkey.service.port -}}
+{{- if eq (include "duihua.responsesApiStoreService.enabled" .) "true" -}}
+{{- $valkey := (index .Values "responses-api-store").valkey -}}
+{{- printf "%s-responses-api-store-valkey.%s.svc.cluster.local:%v" .Release.Name .Release.Namespace $valkey.service.port -}}
+{{- else if .Values.gateway.responsesApiStore.redisAddress -}}
+{{- .Values.gateway.responsesApiStore.redisAddress -}}
 {{- else -}}
-{{- (urlParse .Values.gateway.env.responseIdStoreUrl).host -}}
+{{- fail "gateway.responsesApiStore.redisAddress must be set when responsesApiStoreService.enabled is false" -}}
 {{- end -}}
 {{- end -}}
 
 {{- define "duihua.responseIdStoreTLSEnabled" -}}
-{{- if .Values.valkey.enabled -}}
-false
+{{- if .Values.gateway.responsesApiStore.redisEnableTLS -}}
+true
 {{- else -}}
-{{- eq (urlParse .Values.gateway.env.responseIdStoreUrl).scheme "rediss" -}}
+false
 {{- end -}}
 {{- end -}}
 
 {{- define "duihua.responseIdStoreDatabaseIndex" -}}
-{{- if .Values.valkey.enabled -}}
-0
-{{- else -}}
-{{- $path := (urlParse .Values.gateway.env.responseIdStoreUrl).path | default "" -}}
-{{- trimPrefix "/" $path | default "0" -}}
-{{- end -}}
+{{- .Values.gateway.responsesApiStore.redisDatabaseIndex | default "0" -}}
 {{- end -}}
 
 {{- define "duihua.background.autoscaling.minReplicas" -}}
@@ -104,15 +127,6 @@ true
 {{- end -}}
 {{- end -}}
 
-{{- define "duihua.background.streamKey" -}}
-{{- $backgroundJobs := get .Values.gateway.responsesApiStore "backgroundJobs" | default dict -}}
-{{- if hasKey $backgroundJobs "streamKey" -}}
-{{- get $backgroundJobs "streamKey" -}}
-{{- else -}}
-{{- .Values.backgroundWorker.streamKey -}}
-{{- end -}}
-{{- end -}}
-
 {{- define "duihua.background.staleSeconds" -}}
 {{- $backgroundJobs := get .Values.gateway.responsesApiStore "backgroundJobs" | default dict -}}
 {{- if hasKey $backgroundJobs "staleSeconds" -}}
@@ -131,9 +145,4 @@ true
 {{- end -}}
 
 {{- define "duihua.background.queueBootstrap.enabled" -}}
-{{- if ne (include "duihua.background.autoscaling.enabled" .) "true" -}}
-{{- else if ne (include "duihua.background.autoscaling.minReplicas" .) "0" -}}
-{{- else -}}
-true
-{{- end -}}
 {{- end -}}

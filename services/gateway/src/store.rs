@@ -2,7 +2,7 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
 };
-use duihua_common::{response_id_from_value, StoredResponse};
+use responses_api_store_client::{response_id_from_value, StoredResponse};
 use serde_json::Value;
 use tracing::error;
 
@@ -21,27 +21,14 @@ pub async fn load_stored_response(
         return Err((StatusCode::BAD_GATEWAY, "response id store unavailable").into_response());
     };
 
-    match response_store.load(response_id).await {
+    match response_store
+        .get(response_id, state.background_jobs_enabled)
+        .await
+    {
         Ok(Some(response)) => {
             if background::stored_response_status(&response) == Some("deleted") {
                 return Err(response_not_found(response_id));
             }
-            let response = if let Some(background_queue) = &state.background_queue {
-                match background_queue
-                    .reconcile_stale_response(response_store, response_id, &response)
-                    .await
-                {
-                    Ok(response) => response,
-                    Err(e) => {
-                        error!(
-                            "failed to reconcile stale background response for {response_id}: {e}"
-                        );
-                        response
-                    }
-                }
-            } else {
-                response
-            };
             Ok(response)
         }
         Ok(None) => Err(response_not_found(response_id)),

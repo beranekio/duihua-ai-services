@@ -2,3 +2,4 @@ target/
 **/.DS_Store
 .env
 *.log
+charts/duihua-ai-services/charts/*.tgz

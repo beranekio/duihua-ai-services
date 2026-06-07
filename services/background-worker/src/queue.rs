@@ -6,45 +6,60 @@ use std::{
 };
 
 use anyhow::{bail, Context, Result};
-use duihua_common::response_store_from_env;
-use redis::{
-    aio::{ConnectionManager, ConnectionManagerConfig},
-    streams::{
-        StreamAutoClaimOptions, StreamAutoClaimReply, StreamDeletionPolicy, StreamId,
-        StreamPendingCountReply, StreamRangeReply, StreamReadOptions,
-    },
-    AsyncCommands, RedisError,
-};
+use responses_api_store_client::ClaimBackgroundJobsRequest;
+
+use crate::responses_store::{connect_from_env, StoreHandle};
 use tokio::sync::{watch, Mutex, Semaphore};
 use tokio::task::JoinSet;
 
 use crate::worker::{self, EntrySource, ProcessContext, ProcessOutcome};
+
+const ENSURE_CONSUMER_GROUP_ATTEMPTS: usize = 30;
+const ENSURE_CONSUMER_GROUP_RETRY_DELAY: Duration = Duration::from_secs(2);
+
+async fn ensure_background_consumer_group(
+    response_store: &StoreHandle,
+    consumer_group: &str,
+) -> Result<()> {
+    let mut last_err = None;
+    for attempt in 1..=ENSURE_CONSUMER_GROUP_ATTEMPTS {
+        match response_store
+            .ensure_consumer_group(consumer_group, "0")
+            .await
+        {
+            Ok(_) => return Ok(()),
+            Err(err) => {
+                last_err = Some(err);
+                if attempt < ENSURE_CONSUMER_GROUP_ATTEMPTS {
+                    tokio::time::sleep(ENSURE_CONSUMER_GROUP_RETRY_DELAY).await;
+                }
+            }
+        }
+    }
+
+    Err(last_err.expect("ensure_consumer_group error after retries"))
+        .context("failed to ensure background queue consumer group")
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct QueueMessage {
     pub stream_id: String,
     pub response_id: String,
     pub idle_ms: Option<u64>,
+    pub autoclaimed: bool,
 }
 
 #[derive(Clone)]
 pub struct QueueConfig {
-    pub redis_url: String,
-    pub stream_key: String,
     pub consumer_group: String,
     pub consumer_name: String,
     pub block_ms: usize,
     pub autoclaim_min_idle_ms: usize,
-    pub autoclaim_batch_size: usize,
     pub max_concurrent_jobs: usize,
 }
 
 impl QueueConfig {
     pub fn from_env() -> Result<Self> {
-        let redis_url =
-            env::var("RESPONSE_ID_STORE_URL").unwrap_or_else(|_| "redis://valkey:6379".to_string());
-        let stream_key = env::var("BACKGROUND_QUEUE_STREAM_KEY")
-            .unwrap_or_else(|_| "duihua:responses:background".to_string());
         let consumer_group = env::var("BACKGROUND_QUEUE_CONSUMER_GROUP")
             .unwrap_or_else(|_| "duihua-background".to_string());
         let consumer_name = consumer_name_from_env();
@@ -60,23 +75,13 @@ impl QueueConfig {
             .and_then(|value| value.parse().ok())
             .unwrap_or_else(default_autoclaim_min_idle_ms);
         warn_if_autoclaim_shorter_than_upstream(autoclaim_min_idle_ms);
-        let autoclaim_batch_size = env::var("BACKGROUND_QUEUE_AUTOCLAIM_BATCH_SIZE")
-            .ok()
-            .and_then(|value| value.parse().ok())
-            .unwrap_or(10);
-        if autoclaim_batch_size == 0 {
-            bail!("BACKGROUND_QUEUE_AUTOCLAIM_BATCH_SIZE must be greater than 0");
-        }
         let max_concurrent_jobs = max_concurrent_jobs_from_env()?;
 
         Ok(Self {
-            redis_url,
-            stream_key,
             consumer_group,
             consumer_name,
             block_ms,
             autoclaim_min_idle_ms,
-            autoclaim_batch_size,
             max_concurrent_jobs,
         })
     }
@@ -87,17 +92,15 @@ pub async fn run() -> Result<()> {
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     spawn_shutdown_listener(shutdown_tx);
 
-    let response_store = response_store_from_env().await?;
-    let mut connection = connect_queue(&config).await?;
-
-    ensure_consumer_group(&mut connection, &config).await?;
+    let response_store = connect_from_env().await?;
+    ensure_background_consumer_group(&response_store, &config.consumer_group).await?;
     eprintln!(
         "background worker startup: recommended terminationGracePeriodSeconds={}",
         recommended_termination_grace_period_seconds_for_config(&config)
     );
+
     let job_concurrency = Arc::new(Semaphore::new(config.max_concurrent_jobs));
     drain_pending_at_startup(
-        &mut connection,
         &config,
         &response_store,
         job_concurrency.clone(),
@@ -105,7 +108,6 @@ pub async fn run() -> Result<()> {
     )
     .await;
 
-    let mut autoclaim_cursor = "0-0".to_string();
     let pending_retries = Arc::new(Mutex::new(PendingRetryScheduler::new()));
     let mut join_set = JoinSet::new();
 
@@ -118,7 +120,6 @@ pub async fn run() -> Result<()> {
 
         if !shutdown_triggered(&shutdown_rx) {
             process_due_pending_retries(
-                &mut connection,
                 &config,
                 &response_store,
                 pending_retries.clone(),
@@ -126,67 +127,6 @@ pub async fn run() -> Result<()> {
                 &shutdown_rx,
             )
             .await;
-        }
-
-        if !shutdown_triggered(&shutdown_rx) {
-            if let Some(permit) =
-                acquire_job_permit(job_concurrency.clone(), &shutdown_rx, true).await
-            {
-                if shutdown_triggered(&shutdown_rx) {
-                    drop(permit);
-                } else {
-                    let autoclaim_result: Result<StreamAutoClaimReply, RedisError> = connection
-                        .xautoclaim_options(
-                            &config.stream_key,
-                            &config.consumer_group,
-                            &config.consumer_name,
-                            config.autoclaim_min_idle_ms,
-                            &autoclaim_cursor,
-                            StreamAutoClaimOptions::default().count(1),
-                        )
-                        .await;
-                    match autoclaim_result {
-                        Ok(autoclaim) => {
-                            autoclaim_cursor = autoclaim.next_stream_id;
-                            process_stream_entries(
-                                &mut connection,
-                                &config,
-                                &response_store,
-                                &autoclaim.claimed,
-                                EntrySource::Autoclaimed,
-                                pending_retries.clone(),
-                                job_concurrency.clone(),
-                                &mut join_set,
-                                &shutdown_rx,
-                                Some(permit),
-                            )
-                            .await;
-                        }
-                        Err(err) if is_nogroup(&err) => {
-                            drop(permit);
-                            eprintln!(
-                                "background queue consumer group missing during autoclaim; recreating"
-                            );
-                            if let Err(ensure_err) =
-                                ensure_consumer_group(&mut connection, &config).await
-                            {
-                                eprintln!(
-                                    "failed to recreate background queue consumer group: {ensure_err:?}"
-                                );
-                                sleep_on_redis_error().await;
-                            }
-                        }
-                        Err(err) if is_blocking_command_timeout(&err) => {
-                            drop(permit);
-                        }
-                        Err(err) => {
-                            drop(permit);
-                            eprintln!("failed to auto-claim background queue messages: {err:?}");
-                            sleep_on_redis_error().await;
-                        }
-                    }
-                }
-            }
         }
 
         if shutdown_triggered(&shutdown_rx) {
@@ -201,19 +141,13 @@ pub async fn run() -> Result<()> {
             drop(permit);
             break;
         }
-        match read_new_stream_entries(&mut connection, &config, &shutdown_rx).await {
-            ReadNewOutcome::Shutdown => {
-                drop(permit);
-                break;
-            }
-            ReadNewOutcome::Idle => drop(permit),
-            ReadNewOutcome::Entries(entries) => {
-                process_stream_entries(
-                    &mut connection,
+
+        match claim_jobs(&response_store, &config, 1).await {
+            Ok(Some(message)) => {
+                process_message(
                     &config,
                     &response_store,
-                    &entries,
-                    EntrySource::Live,
+                    message,
                     pending_retries.clone(),
                     job_concurrency.clone(),
                     &mut join_set,
@@ -222,17 +156,11 @@ pub async fn run() -> Result<()> {
                 )
                 .await;
             }
-            ReadNewOutcome::NoGroup => {
+            Ok(None) => drop(permit),
+            Err(err) => {
                 drop(permit);
-                eprintln!("background queue consumer group missing during read; recreating");
-                if let Err(ensure_err) = ensure_consumer_group(&mut connection, &config).await {
-                    eprintln!("failed to recreate background queue consumer group: {ensure_err:?}");
-                    sleep_on_redis_error().await;
-                }
-            }
-            ReadNewOutcome::RedisError => {
-                drop(permit);
-                sleep_on_redis_error().await;
+                eprintln!("failed to claim background queue jobs: {err:?}");
+                sleep_on_store_error().await;
             }
         }
     }
@@ -243,12 +171,285 @@ pub async fn run() -> Result<()> {
     Ok(())
 }
 
-enum ReadNewOutcome {
-    Shutdown,
-    Idle,
-    Entries(Vec<StreamId>),
-    NoGroup,
-    RedisError,
+async fn claim_jobs(
+    response_store: &StoreHandle,
+    config: &QueueConfig,
+    count: u32,
+) -> Result<Option<QueueMessage>> {
+    let result = response_store
+        .claim_background_jobs(ClaimBackgroundJobsRequest {
+            consumer_group: config.consumer_group.clone(),
+            consumer_name: config.consumer_name.clone(),
+            count,
+            block_ms: config.block_ms as u32,
+            autoclaim_min_idle_ms: config.autoclaim_min_idle_ms as u32,
+        })
+        .await?;
+
+    for stream_id in result.pending_stream_ids {
+        eprintln!("background queue entry {stream_id} pending hydration; leaving in PEL");
+    }
+
+    Ok(result.jobs.into_iter().next().map(|job| QueueMessage {
+        stream_id: job.stream_id,
+        response_id: job.response_id,
+        idle_ms: job.idle_ms,
+        autoclaimed: job.autoclaimed,
+    }))
+}
+
+fn entry_source_for_message(message: &QueueMessage, startup_pending: bool) -> EntrySource {
+    if startup_pending {
+        EntrySource::StartupPending
+    } else if message.autoclaimed {
+        EntrySource::Autoclaimed
+    } else {
+        EntrySource::Live
+    }
+}
+
+async fn drain_pending_at_startup(
+    config: &QueueConfig,
+    response_store: &StoreHandle,
+    job_concurrency: Arc<Semaphore>,
+    shutdown_rx: &watch::Receiver<bool>,
+) {
+    loop {
+        if shutdown_triggered(shutdown_rx) {
+            break;
+        }
+
+        let Some(permit) = acquire_job_permit(job_concurrency.clone(), shutdown_rx, true).await
+        else {
+            break;
+        };
+
+        match claim_jobs(response_store, config, 1).await {
+            Ok(Some(message)) => {
+                if let Err(err) = handle_message(
+                    config,
+                    response_store,
+                    &message,
+                    entry_source_for_message(&message, true),
+                )
+                .await
+                {
+                    eprintln!(
+                        "failed to process startup pending entry {}: {err:?}",
+                        message.stream_id
+                    );
+                    drop(permit);
+                    break;
+                }
+            }
+            Ok(None) => {
+                drop(permit);
+                break;
+            }
+            Err(err) => {
+                drop(permit);
+                eprintln!("failed to drain pending background queue messages at startup: {err:?}");
+                sleep_on_store_error().await;
+                break;
+            }
+        }
+        drop(permit);
+    }
+}
+
+#[derive(Debug)]
+struct PendingRetryEntry {
+    response_id: String,
+    retry_at: Instant,
+    autoclaimed: bool,
+    idle_ms: Option<u64>,
+}
+
+#[derive(Debug, Default)]
+struct PendingRetryScheduler {
+    entries: HashMap<String, PendingRetryEntry>,
+}
+
+impl PendingRetryScheduler {
+    fn new() -> Self {
+        Self::default()
+    }
+
+    fn schedule(&mut self, message: &QueueMessage, backoff: Duration) {
+        self.entries.insert(
+            message.stream_id.clone(),
+            PendingRetryEntry {
+                response_id: message.response_id.clone(),
+                retry_at: Instant::now() + backoff,
+                autoclaimed: message.autoclaimed,
+                idle_ms: message.idle_ms,
+            },
+        );
+    }
+
+    fn remove(&mut self, stream_id: &str) {
+        self.entries.remove(stream_id);
+    }
+
+    fn due_messages(&self) -> Vec<QueueMessage> {
+        let now = Instant::now();
+        self.entries
+            .iter()
+            .filter(|(_, entry)| entry.retry_at <= now)
+            .map(|(stream_id, entry)| QueueMessage {
+                stream_id: stream_id.clone(),
+                response_id: entry.response_id.clone(),
+                idle_ms: entry.idle_ms,
+                autoclaimed: entry.autoclaimed,
+            })
+            .collect()
+    }
+}
+
+async fn process_due_pending_retries(
+    config: &QueueConfig,
+    response_store: &StoreHandle,
+    pending_retries: Arc<Mutex<PendingRetryScheduler>>,
+    job_concurrency: Arc<Semaphore>,
+    shutdown_rx: &watch::Receiver<bool>,
+) {
+    let due_messages = {
+        let scheduler = pending_retries.lock().await;
+        scheduler.due_messages()
+    };
+
+    for message in due_messages {
+        if shutdown_triggered(shutdown_rx) {
+            break;
+        }
+
+        let Some(permit) = acquire_job_permit(job_concurrency.clone(), shutdown_rx, true).await
+        else {
+            break;
+        };
+
+        match handle_message(
+            config,
+            response_store,
+            &message,
+            entry_source_for_message(&message, false),
+        )
+        .await
+        {
+            Ok(()) => pending_retries.lock().await.remove(&message.stream_id),
+            Err(err) if err.downcast_ref::<RetryableMessageError>().is_some() => {
+                pending_retries
+                    .lock()
+                    .await
+                    .schedule(&message, pending_retry_backoff_from_env());
+            }
+            Err(err) => {
+                eprintln!(
+                    "failed pending retry for background queue message {}: {err:?}",
+                    message.response_id
+                );
+                pending_retries
+                    .lock()
+                    .await
+                    .schedule(&message, pending_retry_backoff_from_env());
+            }
+        }
+        drop(permit);
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn process_message(
+    config: &QueueConfig,
+    response_store: &StoreHandle,
+    message: QueueMessage,
+    pending_retries: Arc<Mutex<PendingRetryScheduler>>,
+    job_concurrency: Arc<Semaphore>,
+    join_set: &mut JoinSet<()>,
+    shutdown_rx: &watch::Receiver<bool>,
+    mut reserved_permit: Option<tokio::sync::OwnedSemaphorePermit>,
+) {
+    let response_id = message.response_id.clone();
+    let entry_source = entry_source_for_message(&message, false);
+    let permit = match reserved_permit.take() {
+        Some(permit) => Some(permit),
+        None => acquire_job_permit(job_concurrency.clone(), shutdown_rx, true).await,
+    };
+    let Some(permit) = permit else {
+        return;
+    };
+
+    if shutdown_triggered(shutdown_rx) {
+        match handle_message(config, response_store, &message, entry_source).await {
+            Ok(()) => {}
+            Err(err) if err.downcast_ref::<RetryableMessageError>().is_some() => {
+                pending_retries
+                    .lock()
+                    .await
+                    .schedule(&message, pending_retry_backoff_from_env());
+            }
+            Err(err) => {
+                eprintln!("failed to process background queue message {response_id}: {err:?}");
+            }
+        }
+        drop(permit);
+        return;
+    }
+
+    let config = config.clone();
+    let response_store = response_store.clone();
+    let pending_retries = pending_retries.clone();
+    join_set.spawn(async move {
+        let _permit = permit;
+        match handle_message(&config, &response_store, &message, entry_source).await {
+            Ok(()) => {}
+            Err(err) if err.downcast_ref::<RetryableMessageError>().is_some() => {
+                pending_retries
+                    .lock()
+                    .await
+                    .schedule(&message, pending_retry_backoff_from_env());
+            }
+            Err(err) => {
+                eprintln!("failed to process background queue message {response_id}: {err:?}");
+            }
+        }
+    });
+
+    drop(reserved_permit);
+}
+
+#[derive(Debug)]
+struct RetryableMessageError;
+
+impl std::fmt::Display for RetryableMessageError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("background queue message will be retried")
+    }
+}
+
+impl std::error::Error for RetryableMessageError {}
+
+async fn handle_message(
+    config: &QueueConfig,
+    response_store: &StoreHandle,
+    message: &QueueMessage,
+    entry_source: EntrySource,
+) -> Result<()> {
+    let ctx = ProcessContext {
+        message_idle_ms: message.idle_ms,
+        autoclaim_min_idle_ms: config.autoclaim_min_idle_ms,
+        entry_source,
+    };
+    match worker::process_response(response_store, &message.response_id, ctx).await? {
+        ProcessOutcome::Ack => {
+            response_store
+                .acknowledge_background_job(&config.consumer_group, &message.stream_id)
+                .await
+                .context("failed to acknowledge background queue message")?;
+        }
+        ProcessOutcome::Retry => return Err(RetryableMessageError.into()),
+    }
+    Ok(())
 }
 
 fn shutdown_triggered(shutdown_rx: &watch::Receiver<bool>) -> bool {
@@ -280,49 +481,6 @@ fn spawn_shutdown_listener(shutdown_tx: watch::Sender<bool>) {
             eprintln!("background worker shutdown signal received; stopping new queue reads");
             let _ = shutdown_tx.send(true);
         });
-    }
-}
-
-async fn read_new_stream_entries(
-    connection: &mut ConnectionManager,
-    config: &QueueConfig,
-    shutdown_rx: &watch::Receiver<bool>,
-) -> ReadNewOutcome {
-    if shutdown_triggered(shutdown_rx) {
-        return ReadNewOutcome::Shutdown;
-    }
-
-    let new_opts = StreamReadOptions::default()
-        .group(&config.consumer_group, &config.consumer_name)
-        .block(config.block_ms)
-        .count(1);
-    let stream_keys = [&config.stream_key];
-    let stream_ids = [">"];
-
-    // Let blocking reads finish so claimed entries are not abandoned in the PEL.
-    match connection
-        .xread_options::<_, _, Option<redis::streams::StreamReadReply>>(
-            &stream_keys,
-            &stream_ids,
-            &new_opts,
-        )
-        .await
-    {
-        Ok(Some(reply)) => {
-            let entries: Vec<StreamId> = reply
-                .keys
-                .iter()
-                .flat_map(|key| key.ids.iter().cloned())
-                .collect();
-            ReadNewOutcome::Entries(entries)
-        }
-        Ok(None) => ReadNewOutcome::Idle,
-        Err(err) if is_blocking_command_timeout(&err) => ReadNewOutcome::Idle,
-        Err(err) if is_nogroup(&err) => ReadNewOutcome::NoGroup,
-        Err(err) => {
-            eprintln!("failed to read new background queue messages: {err:?}");
-            ReadNewOutcome::RedisError
-        }
     }
 }
 
@@ -398,474 +556,6 @@ pub fn recommended_termination_grace_period_seconds_for_upstream_and_block(
         .max(30) as u64
 }
 
-#[allow(dead_code)]
-pub fn recommended_termination_grace_period_seconds() -> u64 {
-    recommended_termination_grace_period_seconds_for_upstream_and_block(
-        upstream_timeout_seconds_from_env(),
-        env::var("BACKGROUND_QUEUE_BLOCK_MS")
-            .ok()
-            .and_then(|value| value.parse().ok())
-            .unwrap_or(5_000),
-    )
-}
-
-#[derive(Debug)]
-struct PendingRetryEntry {
-    response_id: String,
-    retry_at: Instant,
-}
-
-#[derive(Debug, Default)]
-struct PendingRetryScheduler {
-    entries: HashMap<String, PendingRetryEntry>,
-}
-
-impl PendingRetryScheduler {
-    fn new() -> Self {
-        Self::default()
-    }
-
-    fn schedule(&mut self, stream_id: String, response_id: String, backoff: Duration) {
-        self.entries.insert(
-            stream_id,
-            PendingRetryEntry {
-                response_id,
-                retry_at: Instant::now() + backoff,
-            },
-        );
-    }
-
-    fn remove(&mut self, stream_id: &str) {
-        self.entries.remove(stream_id);
-    }
-
-    fn due_stream_ids(&self) -> Vec<String> {
-        let now = Instant::now();
-        self.entries
-            .iter()
-            .filter(|(_, entry)| entry.retry_at <= now)
-            .map(|(stream_id, _)| stream_id.clone())
-            .collect()
-    }
-}
-
-async fn process_due_pending_retries(
-    connection: &mut ConnectionManager,
-    config: &QueueConfig,
-    response_store: &duihua_common::ResponseStore,
-    pending_retries: Arc<Mutex<PendingRetryScheduler>>,
-    job_concurrency: Arc<Semaphore>,
-    shutdown_rx: &watch::Receiver<bool>,
-) {
-    let due_stream_ids = {
-        let scheduler = pending_retries.lock().await;
-        scheduler.due_stream_ids()
-    };
-    for stream_id in due_stream_ids {
-        if shutdown_triggered(shutdown_rx) {
-            break;
-        }
-        let response_id = {
-            let scheduler = pending_retries.lock().await;
-            let Some(retry_entry) = scheduler.entries.get(&stream_id) else {
-                continue;
-            };
-            retry_entry.response_id.clone()
-        };
-        let idle_ms = pending_idle_ms(connection, config, &stream_id)
-            .await
-            .unwrap_or(None);
-        let message = match load_queue_message(connection, config, &stream_id, idle_ms).await {
-            Ok(Some(message)) => message,
-            Ok(None) => {
-                eprintln!("pending retry entry {stream_id} missing or malformed; acknowledging");
-                if acknowledge_message(connection, config, &stream_id)
-                    .await
-                    .is_ok()
-                {
-                    pending_retries.lock().await.remove(&stream_id);
-                }
-                continue;
-            }
-            Err(err) => {
-                eprintln!("failed to load pending retry entry {stream_id}: {err:?}");
-                pending_retries.lock().await.schedule(
-                    stream_id,
-                    response_id,
-                    pending_retry_backoff_from_env(),
-                );
-                continue;
-            }
-        };
-
-        let Some(permit) = acquire_job_permit(job_concurrency.clone(), shutdown_rx, true).await
-        else {
-            break;
-        };
-        match handle_message(
-            connection,
-            config,
-            response_store,
-            message,
-            EntrySource::Live,
-        )
-        .await
-        {
-            Ok(()) => {
-                pending_retries.lock().await.remove(&stream_id);
-            }
-            Err(err) if err.downcast_ref::<RetryableMessageError>().is_some() => {
-                pending_retries.lock().await.schedule(
-                    stream_id,
-                    response_id,
-                    pending_retry_backoff_from_env(),
-                );
-            }
-            Err(err) => {
-                eprintln!(
-                    "failed pending retry for background queue message {response_id}: {err:?}"
-                );
-                pending_retries.lock().await.schedule(
-                    stream_id,
-                    response_id,
-                    pending_retry_backoff_from_env(),
-                );
-            }
-        }
-        drop(permit);
-    }
-}
-
-async fn pending_idle_ms(
-    connection: &mut ConnectionManager,
-    config: &QueueConfig,
-    stream_id: &str,
-) -> Result<Option<u64>> {
-    let pending: StreamPendingCountReply = connection
-        .xpending_consumer_count(
-            &config.stream_key,
-            &config.consumer_group,
-            stream_id,
-            stream_id,
-            1,
-            &config.consumer_name,
-        )
-        .await?;
-    Ok(pending
-        .ids
-        .first()
-        .map(|entry| entry.last_delivered_ms as u64))
-}
-
-async fn load_queue_message(
-    connection: &mut ConnectionManager,
-    config: &QueueConfig,
-    stream_id: &str,
-    idle_ms: Option<u64>,
-) -> Result<Option<QueueMessage>> {
-    let range: StreamRangeReply = connection
-        .xrange(&config.stream_key, stream_id, stream_id)
-        .await?;
-    let Some(entry) = range.ids.first() else {
-        return Ok(None);
-    };
-    let Some(mut message) = queue_message_from_stream_entry(entry) else {
-        return Ok(None);
-    };
-    message.idle_ms = idle_ms.or(message.idle_ms);
-    Ok(Some(message))
-}
-
-fn resolve_consumer_name(explicit: Option<&str>, host: &str, pid: u32) -> String {
-    if let Some(name) = explicit {
-        return name.to_string();
-    }
-    format!("{host}-{pid}")
-}
-
-fn max_concurrent_jobs_from_env() -> Result<usize> {
-    max_concurrent_jobs_from_env_value(
-        env::var("BACKGROUND_QUEUE_MAX_CONCURRENT_JOBS")
-            .ok()
-            .as_deref(),
-    )
-}
-
-fn max_concurrent_jobs_from_env_value(explicit: Option<&str>) -> Result<usize> {
-    let max_concurrent_jobs = explicit.and_then(|value| value.parse().ok()).unwrap_or(1);
-    if max_concurrent_jobs == 0 {
-        bail!("BACKGROUND_QUEUE_MAX_CONCURRENT_JOBS must be greater than 0");
-    }
-    Ok(max_concurrent_jobs)
-}
-
-fn consumer_name_from_env() -> String {
-    let explicit = env::var("BACKGROUND_QUEUE_CONSUMER_NAME").ok();
-    let host = env::var("HOSTNAME").unwrap_or_else(|_| "duihua-background-worker".to_string());
-    resolve_consumer_name(explicit.as_deref(), &host, std::process::id())
-}
-
-async fn drain_pending_at_startup(
-    connection: &mut ConnectionManager,
-    config: &QueueConfig,
-    response_store: &duihua_common::ResponseStore,
-    job_concurrency: Arc<Semaphore>,
-    shutdown_rx: &watch::Receiver<bool>,
-) {
-    loop {
-        if shutdown_triggered(shutdown_rx) {
-            break;
-        }
-
-        let pending: StreamPendingCountReply = match connection
-            .xpending_consumer_count(
-                &config.stream_key,
-                &config.consumer_group,
-                "-",
-                "+",
-                config.autoclaim_batch_size,
-                &config.consumer_name,
-            )
-            .await
-        {
-            Ok(pending) => pending,
-            Err(err) if is_nogroup(&err) => {
-                eprintln!(
-                    "background queue consumer group missing during startup drain; recreating"
-                );
-                if let Err(ensure_err) = ensure_consumer_group(connection, config).await {
-                    eprintln!("failed to recreate background queue consumer group: {ensure_err:?}");
-                }
-                continue;
-            }
-            Err(err) => {
-                eprintln!("failed to drain pending background queue messages at startup: {err:?}");
-                sleep_on_redis_error().await;
-                break;
-            }
-        };
-
-        if pending.ids.is_empty() {
-            break;
-        }
-
-        let mut stopped_on_error = false;
-        for pending_id in pending.ids {
-            if shutdown_triggered(shutdown_rx) {
-                stopped_on_error = true;
-                break;
-            }
-
-            let idle_ms = Some(pending_id.last_delivered_ms as u64);
-            let stream_id = pending_id.id.clone();
-            let message = match load_queue_message(connection, config, &stream_id, idle_ms).await {
-                Ok(Some(message)) => message,
-                Ok(None) => {
-                    eprintln!("acknowledging malformed startup pending entry {stream_id}");
-                    if acknowledge_message(connection, config, &stream_id)
-                        .await
-                        .is_err()
-                    {
-                        stopped_on_error = true;
-                        break;
-                    }
-                    continue;
-                }
-                Err(err) => {
-                    eprintln!("failed to load startup pending entry {stream_id}: {err:?}");
-                    stopped_on_error = true;
-                    break;
-                }
-            };
-
-            let Some(permit) = acquire_job_permit(job_concurrency.clone(), shutdown_rx, true).await
-            else {
-                stopped_on_error = true;
-                break;
-            };
-            match handle_message(
-                connection,
-                config,
-                response_store,
-                message,
-                EntrySource::StartupPending,
-            )
-            .await
-            {
-                Ok(()) => {}
-                Err(err) => {
-                    eprintln!("failed to process startup pending entry {stream_id}: {err:?}");
-                    stopped_on_error = true;
-                    drop(permit);
-                    break;
-                }
-            }
-            drop(permit);
-        }
-
-        if stopped_on_error {
-            break;
-        }
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-async fn process_stream_entries(
-    connection: &mut ConnectionManager,
-    config: &QueueConfig,
-    response_store: &duihua_common::ResponseStore,
-    entries: &[StreamId],
-    entry_source: EntrySource,
-    pending_retries: Arc<Mutex<PendingRetryScheduler>>,
-    job_concurrency: Arc<Semaphore>,
-    join_set: &mut JoinSet<()>,
-    shutdown_rx: &watch::Receiver<bool>,
-    mut reserved_permit: Option<tokio::sync::OwnedSemaphorePermit>,
-) {
-    let (messages, invalid_ids) = split_stream_entries(entries);
-
-    for stream_id in invalid_ids {
-        eprintln!("acknowledging malformed background queue entry {stream_id}");
-        if let Err(err) = acknowledge_message(connection, config, &stream_id).await {
-            eprintln!("failed to acknowledge malformed entry {stream_id}: {err:?}");
-        }
-    }
-
-    for message in messages {
-        let response_id = message.response_id.clone();
-        let stream_id = message.stream_id.clone();
-        let Some(permit) = (match reserved_permit.take() {
-            Some(permit) => Some(permit),
-            None => acquire_job_permit(job_concurrency.clone(), shutdown_rx, true).await,
-        }) else {
-            break;
-        };
-
-        if shutdown_triggered(shutdown_rx) {
-            match handle_message(connection, config, response_store, message, entry_source).await {
-                Ok(()) => {}
-                Err(err) if err.downcast_ref::<RetryableMessageError>().is_some() => {
-                    pending_retries.lock().await.schedule(
-                        stream_id,
-                        response_id,
-                        pending_retry_backoff_from_env(),
-                    );
-                }
-                Err(err) => {
-                    eprintln!("failed to process background queue message {response_id}: {err:?}");
-                }
-            }
-            drop(permit);
-            continue;
-        }
-
-        let mut worker_connection = connection.clone();
-        let config = config.clone();
-        let response_store = response_store.clone();
-        let pending_retries = pending_retries.clone();
-        join_set.spawn(async move {
-            let _permit = permit;
-            match handle_message(
-                &mut worker_connection,
-                &config,
-                &response_store,
-                message,
-                entry_source,
-            )
-            .await
-            {
-                Ok(()) => {}
-                Err(err) if err.downcast_ref::<RetryableMessageError>().is_some() => {
-                    pending_retries.lock().await.schedule(
-                        stream_id,
-                        response_id,
-                        pending_retry_backoff_from_env(),
-                    );
-                }
-                Err(err) => {
-                    eprintln!("failed to process background queue message {response_id}: {err:?}");
-                }
-            }
-        });
-    }
-
-    drop(reserved_permit);
-}
-
-async fn ensure_consumer_group(
-    connection: &mut ConnectionManager,
-    config: &QueueConfig,
-) -> Result<()> {
-    match connection
-        .xgroup_create_mkstream(&config.stream_key, &config.consumer_group, "0")
-        .await
-    {
-        Ok(()) => Ok(()),
-        Err(err) if is_busygroup(&err) => Ok(()),
-        Err(err) => Err(err).context("failed to create background queue consumer group"),
-    }
-}
-
-#[derive(Debug)]
-struct RetryableMessageError;
-
-impl std::fmt::Display for RetryableMessageError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("background queue message will be retried")
-    }
-}
-
-impl std::error::Error for RetryableMessageError {}
-
-async fn handle_message(
-    connection: &mut ConnectionManager,
-    config: &QueueConfig,
-    response_store: &duihua_common::ResponseStore,
-    message: QueueMessage,
-    entry_source: EntrySource,
-) -> Result<()> {
-    let ctx = ProcessContext {
-        message_idle_ms: message.idle_ms,
-        autoclaim_min_idle_ms: config.autoclaim_min_idle_ms,
-        entry_source,
-    };
-    match worker::process_response(response_store, &message.response_id, ctx).await? {
-        ProcessOutcome::Ack => {
-            acknowledge_message(connection, config, &message.stream_id).await?;
-        }
-        ProcessOutcome::Retry => {
-            return Err(RetryableMessageError.into());
-        }
-    }
-    Ok(())
-}
-
-async fn acknowledge_message(
-    connection: &mut ConnectionManager,
-    config: &QueueConfig,
-    stream_id: &str,
-) -> Result<()> {
-    let ids = [stream_id];
-    match connection
-        .xack_del::<_, _, _, Vec<redis::streams::XAckDelStatusCode>>(
-            &config.stream_key,
-            &config.consumer_group,
-            &ids,
-            StreamDeletionPolicy::Acked,
-        )
-        .await
-    {
-        Ok(_) => Ok(()),
-        Err(err) if is_unsupported_xackdel(&err) => {
-            let _: usize = connection
-                .xack(&config.stream_key, &config.consumer_group, &ids)
-                .await?;
-            Ok(())
-        }
-        Err(err) => Err(err).context("failed to acknowledge background queue message"),
-    }
-}
-
 fn autoclaim_min_idle_ms_for_upstream_timeout(upstream_secs: usize) -> usize {
     upstream_secs.saturating_add(120).saturating_mul(1000)
 }
@@ -898,153 +588,42 @@ fn warn_if_autoclaim_shorter_than_upstream(autoclaim_min_idle_ms: usize) {
     }
 }
 
-async fn sleep_on_redis_error() {
+async fn sleep_on_store_error() {
     tokio::time::sleep(Duration::from_secs(1)).await;
 }
 
-pub fn response_id_from_stream_entry(entry: &StreamId) -> Option<String> {
-    entry.get("response_id")
-}
-
-pub fn queue_message_from_stream_entry(entry: &StreamId) -> Option<QueueMessage> {
-    response_id_from_stream_entry(entry).map(|response_id| QueueMessage {
-        stream_id: entry.id.clone(),
-        response_id,
-        idle_ms: entry
-            .milliseconds_elapsed_from_delivery
-            .map(|idle| idle as u64),
-    })
-}
-
-pub fn split_stream_entries(entries: &[StreamId]) -> (Vec<QueueMessage>, Vec<String>) {
-    let mut messages = Vec::new();
-    let mut invalid_ids = Vec::new();
-    for entry in entries {
-        if let Some(message) = queue_message_from_stream_entry(entry) {
-            messages.push(message);
-        } else {
-            invalid_ids.push(entry.id.clone());
-        }
+fn resolve_consumer_name(explicit: Option<&str>, host: &str, pid: u32) -> String {
+    if let Some(name) = explicit {
+        return name.to_string();
     }
-    (messages, invalid_ids)
+    format!("{host}-{pid}")
 }
 
-fn is_busygroup(err: &RedisError) -> bool {
-    err.code() == Some("BUSYGROUP")
+fn max_concurrent_jobs_from_env() -> Result<usize> {
+    max_concurrent_jobs_from_env_value(
+        env::var("BACKGROUND_QUEUE_MAX_CONCURRENT_JOBS")
+            .ok()
+            .as_deref(),
+    )
 }
 
-fn is_nogroup(err: &RedisError) -> bool {
-    err.code() == Some("NOGROUP")
+fn max_concurrent_jobs_from_env_value(explicit: Option<&str>) -> Result<usize> {
+    let max_concurrent_jobs = explicit.and_then(|value| value.parse().ok()).unwrap_or(1);
+    if max_concurrent_jobs == 0 {
+        bail!("BACKGROUND_QUEUE_MAX_CONCURRENT_JOBS must be greater than 0");
+    }
+    Ok(max_concurrent_jobs)
 }
 
-fn is_unsupported_xackdel(err: &RedisError) -> bool {
-    err.to_string()
-        .to_ascii_lowercase()
-        .contains("unknown command")
-}
-
-fn is_blocking_command_timeout(err: &RedisError) -> bool {
-    err.is_timeout()
-}
-
-async fn connect_queue(config: &QueueConfig) -> Result<ConnectionManager> {
-    let client = redis::Client::open(config.redis_url.as_str())
-        .with_context(|| format!("invalid RESPONSE_ID_STORE_URL {}", config.redis_url))?;
-    let manager_config = ConnectionManagerConfig::new()
-        .set_response_timeout(Some(redis_response_timeout_for_block_ms(config.block_ms)));
-    ConnectionManager::new_with_config(client, manager_config)
-        .await
-        .with_context(|| "failed to connect to background queue")
-}
-
-fn redis_response_timeout_for_block_ms(block_ms: usize) -> Duration {
-    Duration::from_millis(block_ms.saturating_add(2_000) as u64)
+fn consumer_name_from_env() -> String {
+    let explicit = env::var("BACKGROUND_QUEUE_CONSUMER_NAME").ok();
+    let host = env::var("HOSTNAME").unwrap_or_else(|_| "duihua-background-worker".to_string());
+    resolve_consumer_name(explicit.as_deref(), &host, std::process::id())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use redis::FromRedisValue;
-    use redis::Value;
-
-    #[test]
-    fn extracts_response_id_from_stream_entry() {
-        let entry = StreamId {
-            id: "1717670000000-0".to_string(),
-            map: [(
-                "response_id".to_string(),
-                Value::BulkString(b"resp_abc".to_vec()),
-            )]
-            .into(),
-            milliseconds_elapsed_from_delivery: Some(42_usize),
-            delivered_count: None,
-        };
-
-        assert_eq!(
-            response_id_from_stream_entry(&entry).as_deref(),
-            Some("resp_abc")
-        );
-        assert_eq!(
-            queue_message_from_stream_entry(&entry),
-            Some(QueueMessage {
-                stream_id: "1717670000000-0".to_string(),
-                response_id: "resp_abc".to_string(),
-                idle_ms: Some(42),
-            })
-        );
-    }
-
-    #[test]
-    fn splits_invalid_stream_entries_for_explicit_ack() {
-        let valid = StreamId {
-            id: "1717670000000-0".to_string(),
-            map: [(
-                "response_id".to_string(),
-                Value::BulkString(b"resp_abc".to_vec()),
-            )]
-            .into(),
-            milliseconds_elapsed_from_delivery: None,
-            delivered_count: None,
-        };
-        let invalid = StreamId {
-            id: "1717670000001-0".to_string(),
-            map: [("other".to_string(), Value::BulkString(b"x".to_vec()))].into(),
-            milliseconds_elapsed_from_delivery: None,
-            delivered_count: None,
-        };
-
-        let (messages, invalid_ids) = split_stream_entries(&[valid, invalid]);
-        assert_eq!(messages.len(), 1);
-        assert_eq!(invalid_ids, vec!["1717670000001-0".to_string()]);
-    }
-
-    #[test]
-    fn parses_messages_from_xreadgroup_reply() {
-        let value = Value::Array(vec![Value::Array(vec![
-            Value::BulkString(b"duihua:responses:background".to_vec()),
-            Value::Array(vec![Value::Array(vec![
-                Value::BulkString(b"1717670000000-0".to_vec()),
-                Value::Array(vec![
-                    Value::BulkString(b"response_id".to_vec()),
-                    Value::BulkString(b"resp_xyz".to_vec()),
-                ]),
-            ])]),
-        ])]);
-        let reply = redis::streams::StreamReadReply::from_redis_value(value).expect("reply");
-        let entries: Vec<StreamId> = reply
-            .keys
-            .iter()
-            .flat_map(|key| key.ids.iter().cloned())
-            .collect();
-        assert_eq!(
-            split_stream_entries(&entries).0,
-            vec![QueueMessage {
-                stream_id: "1717670000000-0".to_string(),
-                response_id: "resp_xyz".to_string(),
-                idle_ms: None,
-            }]
-        );
-    }
 
     #[test]
     fn rejects_zero_block_ms() {
@@ -1072,38 +651,10 @@ mod tests {
     }
 
     #[test]
-    fn rejects_zero_autoclaim_batch_size() {
-        env::set_var("BACKGROUND_QUEUE_AUTOCLAIM_BATCH_SIZE", "0");
-        assert!(QueueConfig::from_env().is_err());
-        env::remove_var("BACKGROUND_QUEUE_AUTOCLAIM_BATCH_SIZE");
-    }
-
-    #[test]
     fn max_concurrent_jobs_defaults_and_rejects_zero() {
         assert_eq!(max_concurrent_jobs_from_env_value(None).unwrap(), 1);
         assert!(max_concurrent_jobs_from_env_value(Some("0")).is_err());
         assert_eq!(max_concurrent_jobs_from_env_value(Some("4")).unwrap(), 4);
-    }
-
-    #[test]
-    fn detects_nogroup_errors() {
-        let err = redis::make_extension_error(
-            "NOGROUP".to_string(),
-            Some("NOGROUP No such key or consumer group".to_string()),
-        );
-        assert!(is_nogroup(&err));
-    }
-
-    #[test]
-    fn redis_response_timeout_exceeds_block_ms() {
-        assert_eq!(
-            redis_response_timeout_for_block_ms(1_000),
-            Duration::from_millis(3_000)
-        );
-        assert_eq!(
-            redis_response_timeout_for_block_ms(5_000),
-            Duration::from_millis(7_000)
-        );
     }
 
     #[test]
@@ -1136,12 +687,24 @@ mod tests {
     fn pending_retry_scheduler_honors_backoff() {
         let mut scheduler = PendingRetryScheduler::new();
         scheduler.schedule(
-            "1-0".to_string(),
-            "resp_a".to_string(),
+            &QueueMessage {
+                stream_id: "1-0".to_string(),
+                response_id: "resp_a".to_string(),
+                idle_ms: None,
+                autoclaimed: false,
+            },
             Duration::from_secs(60),
         );
-        assert!(scheduler.due_stream_ids().is_empty());
+        assert!(scheduler.due_messages().is_empty());
         scheduler.entries.get_mut("1-0").unwrap().retry_at = Instant::now();
-        assert_eq!(scheduler.due_stream_ids(), vec!["1-0".to_string()]);
+        assert_eq!(
+            scheduler.due_messages(),
+            vec![QueueMessage {
+                stream_id: "1-0".to_string(),
+                response_id: "resp_a".to_string(),
+                idle_ms: None,
+                autoclaimed: false,
+            }]
+        );
     }
 }

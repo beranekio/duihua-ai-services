@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use duihua_common::StoredResponse;
+use responses_api_store_client::StoredResponse;
 
 #[derive(Serialize)]
 pub struct ModelListResponse {

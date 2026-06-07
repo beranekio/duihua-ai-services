@@ -26,14 +26,10 @@ spec:
           image: "{{ .Values.backgroundWorker.image.repository }}:{{ .Values.backgroundWorker.image.tag }}"
           imagePullPolicy: {{ .Values.backgroundWorker.image.pullPolicy }}
           env:
-            - name: RESPONSE_ID_STORE_URL
-              value: {{ include "duihua.responseIdStoreUrl" . | quote }}
-            - name: RESPONSE_ID_STORE_KEY_PREFIX
-              value: {{ .Values.gateway.env.responseIdStoreKeyPrefix | quote }}
+            - name: RESPONSES_API_STORE_ENDPOINT
+              value: {{ include "duihua.responsesApiStoreEndpoint" . | quote }}
             - name: RESPONSE_ID_STORE_TTL_SECONDS
               value: {{ .Values.gateway.env.responseIdStoreTtlSeconds | quote }}
-            - name: BACKGROUND_QUEUE_STREAM_KEY
-              value: {{ include "duihua.background.streamKey" . | quote }}
             - name: BACKGROUND_QUEUE_CONSUMER_GROUP
               value: {{ .Values.backgroundWorker.consumerGroup | quote }}
             - name: BACKGROUND_QUEUE_CONSUMER_NAME

@@ -1,6 +1,6 @@
 dependencies:
 - name: responses-api-store
   repository: oci://ghcr.io/beranekio/charts
-  version: 0.0.0-d690b8b6179c22d34d065057d1bf8069b2d0eb93
-digest: sha256:a14c64b9a26f98780871b84f48aeb5ac544b9f5f986fc68b82217be12c7cc0e1
-generated: "2026-06-07T14:56:36.25060417Z"
+  version: 0.0.0-d24948a834366870ab65085c238009e45a1372b8
+digest: sha256:819b1acf6996387149fcca96058422683aeeab1209f47fadd8778026dd6ca98c
+generated: "2026-06-07T18:02:06.028767509Z"

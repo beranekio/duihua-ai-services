@@ -4,6 +4,9 @@ responsesApiStoreService:
   # this service instead of Valkey directly.
   enabled: false
 
+# Stale in_progress reconciliation interval (seconds) for the responses-api-store subchart.
+x-response-store-stale-seconds: &responseStoreStaleSeconds 3600
+
 responses-api-store:
   # Image repository/tag are set by the published OCI chart (git-sha tag).
   metrics:
@@ -12,7 +15,7 @@ responses-api-store:
   store:
     keyPrefix: responses-api-store:responses
     ttlSeconds: 86400
-    staleSeconds: 3600
+    staleSeconds: *responseStoreStaleSeconds
   backgroundQueue:
     streamKey: responses-api-store:background
     streamMaxlen: 10000
@@ -64,8 +67,8 @@ backgroundWorker:
     repository: ghcr.io/example/duihua-background-worker
     tag: "0.1.0"
     pullPolicy: IfNotPresent
-  # Used by the gateway for stale-response reconciliation on GET /v1/responses/{id}.
-  staleSeconds: 3600
+  # Deprecated alias of responses-api-store.store.staleSeconds (kept in sync via anchor).
+  staleSeconds: *responseStoreStaleSeconds
   consumerGroup: duihua-background
   # Keep below the responses-api-store Valkey client response timeout (500ms).
   blockMs: 400

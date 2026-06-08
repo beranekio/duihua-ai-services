@@ -1,4 +1,5 @@
 {{- if eq (include "duihua.background.enabled" .) "true" }}
+{{- $_ := include "duihua.validate.config" . -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:

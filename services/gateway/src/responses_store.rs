@@ -64,10 +64,11 @@ impl StoreHandle {
 
     pub async fn delete(&self, response_id: &str) -> Result<()> {
         let mut client = self.client();
-        client
-            .delete_response(response_id)
-            .await
-            .map_err(map_client_error)
+        match client.delete_response(response_id).await {
+            Ok(_) => Ok(()),
+            Err(err) if delete_not_found(&err) => Ok(()),
+            Err(err) => Err(map_client_error(err)),
+        }
     }
 
     pub async fn enqueue_background_job(
@@ -118,6 +119,31 @@ impl StoreHandle {
     }
 }
 
+fn delete_not_found(err: &ClientError) -> bool {
+    match err {
+        ClientError::NotFound(_) => true,
+        ClientError::Rpc(status) => status.code() == Code::NotFound,
+        _ => false,
+    }
+}
+
 fn map_client_error(err: ClientError) -> anyhow::Error {
     err.into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tonic::Status;
+
+    #[test]
+    fn delete_not_found_matches_client_and_rpc_errors() {
+        assert!(delete_not_found(&ClientError::NotFound("resp_a".into())));
+        assert!(delete_not_found(&ClientError::Rpc(Status::not_found(
+            "missing"
+        ))));
+        assert!(!delete_not_found(&ClientError::Rpc(Status::internal(
+            "backend down"
+        ))));
+    }
 }

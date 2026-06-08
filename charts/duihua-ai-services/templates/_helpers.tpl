@@ -100,13 +100,91 @@ false
 {{- end -}}
 {{- end -}}
 
-{{- define "duihua.background.autoscaling.activationLagCount" -}}
+{{- define "duihua.background.autoscaling.driver" -}}
 {{- $autoscaling := .Values.backgroundWorker.autoscaling | default dict -}}
+{{- $driver := $autoscaling.driver | default "store-metrics" -}}
+{{- $driver -}}
+{{- end -}}
+
+{{- define "duihua.responsesApiStoreMetricsPort" -}}
+{{- $store := get .Values "responses-api-store" | default dict -}}
+{{- $metrics := $store.metrics | default dict -}}
+{{- if $metrics.listenAddr -}}
+{{- $parts := splitList ":" $metrics.listenAddr -}}
+{{- last $parts | int -}}
+{{- else if hasKey $metrics "port" -}}
+{{- $metrics.port -}}
+{{- else -}}
+8080
+{{- end -}}
+{{- end -}}
+
+{{- define "duihua.background.autoscaling.metricsUrl" -}}
+{{- $autoscaling := .Values.backgroundWorker.autoscaling | default dict -}}
+{{- $gatewayStore := dig "responsesApiStore" dict .Values.gateway -}}
+{{- if $autoscaling.metricsUrl -}}
+{{- $autoscaling.metricsUrl -}}
+{{- else if $gatewayStore.metricsUrl -}}
+{{- $gatewayStore.metricsUrl -}}
+{{- else if eq (include "duihua.responsesApiStoreService.enabled" .) "true" -}}
+{{- $store := get .Values "responses-api-store" | default dict -}}
+{{- $metrics := $store.metrics | default dict -}}
+{{- if and (hasKey $metrics "enabled") (not $metrics.enabled) -}}
+{{- fail "responses-api-store.metrics.enabled must be true when backgroundWorker.autoscaling.driver is store-metrics (or set backgroundWorker.autoscaling.metricsUrl)" -}}
+{{- end -}}
+{{- $consumerGroup := .Values.backgroundWorker.consumerGroup | urlquery -}}
+{{- printf "http://%s.%s.svc.cluster.local:%v/metrics/background-queue?consumer_group=%s" (include "duihua.responsesApiStoreService.fullname" .) .Release.Namespace (include "duihua.responsesApiStoreMetricsPort" .) $consumerGroup -}}
+{{- else -}}
+{{- fail "backgroundWorker.autoscaling.metricsUrl must be set when responsesApiStoreService.enabled is false and backgroundWorker.autoscaling.driver is store-metrics" -}}
+{{- end -}}
+{{- end -}}
+
+{{- define "duihua.background.autoscaling.jobsPerReplica" -}}
+{{- $autoscaling := .Values.backgroundWorker.autoscaling | default dict -}}
+{{- $driver := include "duihua.background.autoscaling.driver" . -}}
+{{- if eq $driver "redis-streams" -}}
+{{- if hasKey $autoscaling "lagCount" -}}
+{{- $autoscaling.lagCount -}}
+{{- else if hasKey $autoscaling "jobsPerReplica" -}}
+{{- $autoscaling.jobsPerReplica -}}
+{{- else -}}
+5
+{{- end -}}
+{{- else -}}
+{{- if hasKey $autoscaling "jobsPerReplica" -}}
+{{- $autoscaling.jobsPerReplica -}}
+{{- else if hasKey $autoscaling "lagCount" -}}
+{{- $autoscaling.lagCount -}}
+{{- else -}}
+5
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{- define "duihua.background.autoscaling.activationTargetValue" -}}
+{{- $autoscaling := .Values.backgroundWorker.autoscaling | default dict -}}
+{{- $driver := include "duihua.background.autoscaling.driver" . -}}
+{{- if eq $driver "redis-streams" -}}
 {{- if hasKey $autoscaling "activationLagCount" -}}
+{{- $autoscaling.activationLagCount -}}
+{{- else if hasKey $autoscaling "activationTargetValue" -}}
+{{- $autoscaling.activationTargetValue -}}
+{{- else -}}
+0
+{{- end -}}
+{{- else -}}
+{{- if hasKey $autoscaling "activationTargetValue" -}}
+{{- $autoscaling.activationTargetValue -}}
+{{- else if hasKey $autoscaling "activationLagCount" -}}
 {{- $autoscaling.activationLagCount -}}
 {{- else -}}
 0
 {{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{- define "duihua.background.autoscaling.activationLagCount" -}}
+{{- include "duihua.background.autoscaling.activationTargetValue" . -}}
 {{- end -}}
 
 {{- define "duihua.background.autoscaling.scaledownPeriod" -}}

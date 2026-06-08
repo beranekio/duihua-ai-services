@@ -118,29 +118,37 @@ responses-api-store:
     url: rediss://your-redis.example:6379/0
 ```
 
-For KEDA background-worker autoscaling against external Redis, also set `gateway.responsesApiStore.redisAddress` to a `host:port` KEDA can reach from its namespace (see issue #58 for wiring when bundled Valkey is disabled).
+With external Redis above, keep the default `store-metrics` autoscaling driver: KEDA queries the responses-api-store HTTP metrics endpoint and does not need Valkey access. The legacy `redis-streams` driver still points at the chart-managed Valkey Service name when `responsesApiStoreService.enabled=true`, even if bundled Valkey is disabled; use `store-metrics` here or see issue #58 before opting into `redis-streams`.
 
 For local Docker Compose, set `RESPONSES_API_STORE_ENABLED=true` when starting the stack to exercise persisted follow-up Responses API calls. Streaming responses are persisted after their `response.completed` event.
 
-With the Helm chart, `background=true` Responses API requests are enqueued on a Valkey stream (via the store service) and processed by the `duihua-background-worker` Deployment (synchronous upstream call per message, result written back through the store service). On rollout restart the worker drains in-flight jobs on SIGTERM before exit; set `backgroundWorker.terminationGracePeriodSeconds` above `backgroundWorker.upstreamTimeoutSeconds` plus `backgroundWorker.blockMs` and a safety margin (chart default 665s). The worker logs a recommended grace period at startup. Enable `responsesApiStoreService.enabled=true`, `gateway.responsesApiStore.enabled=true`, and `backgroundWorker.enabled=true`. The kind workflow (`values-kind.yaml`) enables the store subchart, bundled Valkey, background worker, queue settings, and KEDA stream-lag autoscaling for local end-to-end background completion testing.
+With the Helm chart, `background=true` Responses API requests are enqueued on a Valkey stream (via the store service) and processed by the `duihua-background-worker` Deployment (synchronous upstream call per message, result written back through the store service). On rollout restart the worker drains in-flight jobs on SIGTERM before exit; set `backgroundWorker.terminationGracePeriodSeconds` above `backgroundWorker.upstreamTimeoutSeconds` plus `backgroundWorker.blockMs` and a safety margin (chart default 665s). The worker logs a recommended grace period at startup. Enable `responsesApiStoreService.enabled=true`, `gateway.responsesApiStore.enabled=true`, and `backgroundWorker.enabled=true`. The kind workflow (`values-kind.yaml`) enables the store subchart, bundled Valkey, background worker, queue settings, and KEDA store-metrics autoscaling for local end-to-end background completion testing.
 
 ### KEDA autoscaling for background workers (optional)
 
-When `backgroundWorker.autoscaling.enabled=true`, the chart creates a KEDA `ScaledObject` on the worker Deployment. Scaling is driven by Redis Streams consumer-group lag on `backgroundWorker.streamKey` (default `duihua:responses:background`) and `backgroundWorker.consumerGroup` (default `duihua-background`). This uses KEDA's built-in `redis-streams` scaler (KEDA core only; the HTTP add-on is not required).
+When `backgroundWorker.autoscaling.enabled=true`, the chart creates a KEDA `ScaledObject` on the worker Deployment. By default (`driver: store-metrics`), scaling reads the store's `workload` metric from `GET /metrics/background-queue?consumer_group=...` on the responses-api-store Service (`pending + in_progress` jobs). This uses KEDA's `metrics-api` scaler (KEDA core only; the HTTP add-on is not required). KEDA does not need Valkey credentials or stream keys.
 
 ```yaml
 backgroundWorker:
   autoscaling:
     enabled: true
-    lagCount: 5
-    activationLagCount: 0
+    driver: store-metrics
+    jobsPerReplica: 5
+    activationTargetValue: 0
     scaledownPeriod: 300
     replicas:
-      min: 0   # scale-to-zero when idle (requires Valkey/Redis 7+)
+      min: 0   # scale-to-zero when idle
       max: 4
+
+responses-api-store:
+  metrics:
+    enabled: true
+    port: 8080
 ```
 
-Set `replicas.min` to `1` or higher to keep at least one worker pod warm. Use `activationLagCount: 0` so the first queued job wakes a worker (KEDA activates only when lag is strictly greater than this threshold). For external Redis with TLS or auth, configure `responses-api-store.redis.url` (for example `rediss://...`) on the store subchart and/or `backgroundWorker.autoscaling.passwordFromEnv` (env var name on the worker pod for KEDA). Scale-to-zero uses `lagCount` and `activationLagCount`; the bundled subchart Valkey image (9.x) satisfies the Redis 7+ requirement. When autoscaling is enabled, KEDA owns replica counts, the chart omits `spec.replicas`, and `backgroundWorker.replicaCount` is ignored. With `replicas.min: 0`, the gateway ensures the stream consumer group via the responses-api-store gRPC service on startup so KEDA can observe lag before the first worker pod starts. Lag-only scaling can scale down while upstream jobs are still running; tune `scaledownPeriod` or track issue #52 for graceful drain.
+Set `replicas.min` to `1` or higher to keep at least one worker pod warm. Use `activationTargetValue: 0` (or `activationLagCount: 0`) so the first queued job wakes a worker. Tune `jobsPerReplica` or `lagCount` (average queue workload target per replica); lower values scale up sooner. The store computes `workload` from Redis Streams consumer-group stats, so Valkey/Redis **7+** is required for `store-metrics` as well as `redis-streams`. When autoscaling is enabled, KEDA owns replica counts, the chart omits `spec.replicas`, and `backgroundWorker.replicaCount` is ignored. With `replicas.min: 0`, the gateway ensures the stream consumer group via the responses-api-store gRPC service on startup so workers can claim jobs once scaled up.
+
+Legacy `driver: redis-streams` remains available for migration. It scales from Redis Streams consumer-group lag directly and honors `lagCount` / `activationLagCount` before the newer key names. With bundled Valkey disabled, `redis-streams` does not automatically follow `responses-api-store.redis.url`; track issue #58 or disable the store subchart and set `gateway.responsesApiStore.redisAddress`. When the store subchart is disabled, set `backgroundWorker.autoscaling.metricsUrl` for the `store-metrics` driver.
 
 ## Cloud-provider independence
 

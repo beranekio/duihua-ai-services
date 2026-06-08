@@ -1,6 +1,7 @@
 {{- if eq (include "duihua.background.autoscaling.enabled" .) "true" }}
 {{- $autoscaling := .Values.backgroundWorker.autoscaling }}
 {{- $workerName := printf "%s-background-worker" (include "duihua.fullname" .) }}
+{{- $driver := include "duihua.background.autoscaling.driver" . }}
 apiVersion: keda.sh/v1alpha1
 kind: ScaledObject
 metadata:
@@ -21,12 +22,21 @@ spec:
   pollingInterval: {{ . }}
   {{- end }}
   triggers:
+    {{- if eq $driver "store-metrics" }}
+    - type: metrics-api
+      metadata:
+        url: {{ include "duihua.background.autoscaling.metricsUrl" . | quote }}
+        format: "json"
+        valueLocation: "workload"
+        targetValue: {{ include "duihua.background.autoscaling.jobsPerReplica" . | quote }}
+        activationTargetValue: {{ include "duihua.background.autoscaling.activationTargetValue" . | quote }}
+    {{- else if eq $driver "redis-streams" }}
     - type: redis-streams
       metadata:
         address: {{ include "duihua.responseIdStoreAddress" . | quote }}
         stream: {{ include "duihua.background.streamKey" . | quote }}
         consumerGroup: {{ .Values.backgroundWorker.consumerGroup | quote }}
-        lagCount: {{ $autoscaling.lagCount | default 5 | quote }}
+        lagCount: {{ include "duihua.background.autoscaling.jobsPerReplica" . | quote }}
         activationLagCount: {{ include "duihua.background.autoscaling.activationLagCount" . | quote }}
         {{- if or $autoscaling.enableTLS (eq (include "duihua.responseIdStoreTLSEnabled" .) "true") }}
         enableTLS: "true"
@@ -38,4 +48,7 @@ spec:
         {{- with $autoscaling.passwordFromEnv }}
         passwordFromEnv: {{ . | quote }}
         {{- end }}
+    {{- else }}
+    {{- fail (printf "backgroundWorker.autoscaling.driver must be store-metrics or redis-streams, got %q" $driver) }}
+    {{- end }}
 {{- end }}

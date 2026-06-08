@@ -81,9 +81,7 @@ backgroundWorker:
     # driver redis-streams: legacy Valkey stream lag scaler (deprecated).
     enabled: false
     driver: store-metrics
-    jobsPerReplica: 5
-    activationTargetValue: 0
-    # Deprecated aliases for redis-streams driver and older values files.
+    # Threshold aliases; prefer jobsPerReplica / activationTargetValue for store-metrics.
     lagCount: 5
     activationLagCount: 0
     # Override when responsesApiStoreService.enabled=false or metrics are exposed elsewhere.

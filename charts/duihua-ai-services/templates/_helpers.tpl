@@ -109,7 +109,10 @@ false
 {{- define "duihua.responsesApiStoreMetricsPort" -}}
 {{- $store := get .Values "responses-api-store" | default dict -}}
 {{- $metrics := $store.metrics | default dict -}}
-{{- if hasKey $metrics "port" -}}
+{{- if $metrics.listenAddr -}}
+{{- $parts := splitList ":" $metrics.listenAddr -}}
+{{- last $parts | int -}}
+{{- else if hasKey $metrics "port" -}}
 {{- $metrics.port -}}
 {{- else -}}
 8080
@@ -138,6 +141,16 @@ false
 
 {{- define "duihua.background.autoscaling.jobsPerReplica" -}}
 {{- $autoscaling := .Values.backgroundWorker.autoscaling | default dict -}}
+{{- $driver := include "duihua.background.autoscaling.driver" . -}}
+{{- if eq $driver "redis-streams" -}}
+{{- if hasKey $autoscaling "lagCount" -}}
+{{- $autoscaling.lagCount -}}
+{{- else if hasKey $autoscaling "jobsPerReplica" -}}
+{{- $autoscaling.jobsPerReplica -}}
+{{- else -}}
+5
+{{- end -}}
+{{- else -}}
 {{- if hasKey $autoscaling "jobsPerReplica" -}}
 {{- $autoscaling.jobsPerReplica -}}
 {{- else if hasKey $autoscaling "lagCount" -}}
@@ -146,15 +159,27 @@ false
 5
 {{- end -}}
 {{- end -}}
+{{- end -}}
 
 {{- define "duihua.background.autoscaling.activationTargetValue" -}}
 {{- $autoscaling := .Values.backgroundWorker.autoscaling | default dict -}}
+{{- $driver := include "duihua.background.autoscaling.driver" . -}}
+{{- if eq $driver "redis-streams" -}}
+{{- if hasKey $autoscaling "activationLagCount" -}}
+{{- $autoscaling.activationLagCount -}}
+{{- else if hasKey $autoscaling "activationTargetValue" -}}
+{{- $autoscaling.activationTargetValue -}}
+{{- else -}}
+0
+{{- end -}}
+{{- else -}}
 {{- if hasKey $autoscaling "activationTargetValue" -}}
 {{- $autoscaling.activationTargetValue -}}
 {{- else if hasKey $autoscaling "activationLagCount" -}}
 {{- $autoscaling.activationLagCount -}}
 {{- else -}}
 0
+{{- end -}}
 {{- end -}}
 {{- end -}}
 

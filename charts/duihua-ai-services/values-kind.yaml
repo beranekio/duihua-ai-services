@@ -8,6 +8,8 @@ responses-api-store:
       repository: valkey/valkey
       tag: "9.1.0-alpine"
       pullPolicy: IfNotPresent
+  store:
+    staleSeconds: 3600
 
 gateway:
   image:
@@ -40,7 +42,6 @@ backgroundWorker:
     repository: duihua-background-worker
     tag: kind
     pullPolicy: IfNotPresent
-  staleSeconds: 3600
   # Faster pending retries for local smoke tests (live deliveries retry once before processing).
   pendingRetrySeconds: 5
   # Keep below the responses-api-store Valkey client response timeout (500ms).

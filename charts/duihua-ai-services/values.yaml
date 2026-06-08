@@ -64,8 +64,6 @@ backgroundWorker:
     repository: ghcr.io/example/duihua-background-worker
     tag: "0.1.0"
     pullPolicy: IfNotPresent
-  # Used by the gateway for stale-response reconciliation on GET /v1/responses/{id}.
-  staleSeconds: 3600
   consumerGroup: duihua-background
   # Keep below the responses-api-store Valkey client response timeout (500ms).
   blockMs: 400

@@ -103,7 +103,7 @@ inference:
         max: 1
 ```
 
-Gateway and background worker receive `RESPONSES_API_STORE_ENDPOINT` automatically. Redis connection settings belong to the `responses-api-store` subchart, not gateway env vars.
+Gateway and background worker receive `RESPONSES_API_STORE_ENDPOINT` automatically. Redis connection settings belong to the `responses-api-store` subchart, not gateway env vars. When `gateway.responsesApiStore.enabled=true`, also enable `responsesApiStoreService.enabled=true` or set `gateway.responsesApiStore.endpoint` to an external gRPC URL; Helm fails at render time for unsupported combinations. Tune stale `in_progress` reconciliation via `responses-api-store.store.staleSeconds` (`backgroundWorker.staleSeconds` is a deprecated alias; Helm fails at render time when it is set to a value that differs from the subchart setting).
 
 To use an external Valkey/Redis-compatible service instead, keep the subchart enabled, disable bundled Valkey, and point the store service at your cluster:
 

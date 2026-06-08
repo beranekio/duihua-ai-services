@@ -39,10 +39,14 @@ false
 {{- end -}}
 
 {{- define "duihua.responsesApiStoreEndpoint" -}}
-{{- if .Values.gateway.responsesApiStore.endpoint -}}
-{{- .Values.gateway.responsesApiStore.endpoint -}}
+{{- $gatewayStore := dig "responsesApiStore" dict .Values.gateway -}}
+{{- if $gatewayStore.endpoint -}}
+{{- $gatewayStore.endpoint -}}
+{{- else if eq (include "duihua.responsesApiStoreService.enabled" .) "true" -}}
+{{- $store := get .Values "responses-api-store" | default dict -}}
+{{- printf "http://%s:%d" (include "duihua.responsesApiStoreService.fullname" .) (int (dig "grpc" "port" 50051 $store)) -}}
 {{- else -}}
-{{- printf "http://%s:%d" (include "duihua.responsesApiStoreService.fullname" .) (int (index .Values "responses-api-store").grpc.port) -}}
+{{- fail "gateway.responsesApiStore.enabled=true requires responsesApiStoreService.enabled=true or gateway.responsesApiStore.endpoint" -}}
 {{- end -}}
 {{- end -}}
 
@@ -206,11 +210,43 @@ true
 {{- end -}}
 
 {{- define "duihua.background.staleSeconds" -}}
-{{- $backgroundJobs := get .Values.gateway.responsesApiStore "backgroundJobs" | default dict -}}
+{{- $store := get .Values "responses-api-store" | default dict -}}
+{{- $storeCfg := $store.store | default dict -}}
+{{- if hasKey $storeCfg "staleSeconds" -}}
+{{- $storeCfg.staleSeconds -}}
+{{- else -}}
+{{- $gateway := .Values.gateway | default dict -}}
+{{- $backgroundJobs := dig "responsesApiStore" "backgroundJobs" dict $gateway -}}
 {{- if hasKey $backgroundJobs "staleSeconds" -}}
 {{- get $backgroundJobs "staleSeconds" -}}
 {{- else -}}
-{{- .Values.backgroundWorker.staleSeconds -}}
+{{- .Values.backgroundWorker.staleSeconds | default 3600 -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{- define "duihua.validate.config" -}}
+{{- if eq (include "duihua.responsesApiStore.enabled" .) "true" -}}
+{{- $gatewayStore := dig "responsesApiStore" dict .Values.gateway -}}
+{{- if and (eq (include "duihua.responsesApiStoreService.enabled" .) "false") (not $gatewayStore.endpoint) -}}
+{{- fail "gateway.responsesApiStore.enabled=true requires responsesApiStoreService.enabled=true or gateway.responsesApiStore.endpoint" -}}
+{{- end -}}
+{{- if eq (include "duihua.responsesApiStoreService.enabled" .) "true" -}}
+{{- $store := get .Values "responses-api-store" | default dict -}}
+{{- $configured := dig "store" "staleSeconds" 3600 $store | int -}}
+{{- $gateway := .Values.gateway | default dict -}}
+{{- $backgroundJobs := dig "responsesApiStore" "backgroundJobs" dict $gateway -}}
+{{- if hasKey $backgroundJobs "staleSeconds" -}}
+{{- if ne (get $backgroundJobs "staleSeconds" | int) $configured -}}
+{{- fail (printf "gateway.responsesApiStore.backgroundJobs.staleSeconds (%v) must match responses-api-store.store.staleSeconds (%v)" (get $backgroundJobs "staleSeconds") $configured) -}}
+{{- end -}}
+{{- end -}}
+{{- if hasKey .Values.backgroundWorker "staleSeconds" -}}
+{{- if ne (.Values.backgroundWorker.staleSeconds | int) $configured -}}
+{{- fail (printf "backgroundWorker.staleSeconds (%v) must match responses-api-store.store.staleSeconds (%v); set responses-api-store.store.staleSeconds instead" .Values.backgroundWorker.staleSeconds $configured) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
 {{- end -}}
 {{- end -}}
 

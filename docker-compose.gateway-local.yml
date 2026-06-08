@@ -15,7 +15,7 @@ services:
       - "8080:8080"
     depends_on:
       responses-api-store:
-        condition: service_started
+        condition: service_healthy
       vllm:
         condition: service_started
 
@@ -30,6 +30,12 @@ services:
       BACKGROUND_RESPONSE_STALE_SECONDS: "3600"
     ports:
       - "50051:50051"
+    healthcheck:
+      test: ["CMD", "/responses-api-store-probe"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
     depends_on:
       valkey:
         condition: service_healthy

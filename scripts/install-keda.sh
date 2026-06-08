@@ -1,11 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=scripts/_rollout_helpers.sh
+source "${ROOT_DIR}/scripts/_rollout_helpers.sh"
+
 CLUSTER_NAME="${CLUSTER_NAME:-duihua-local}"
 KUBECTL_CONTEXT="${KUBECTL_CONTEXT:-kind-${CLUSTER_NAME}}"
 KEDA_NAMESPACE="${KEDA_NAMESPACE:-keda}"
 KEDA_CHART_VERSION="${KEDA_CHART_VERSION:-}"
 KEDA_HTTP_ADDON_CHART_VERSION="${KEDA_HTTP_ADDON_CHART_VERSION:-}"
+KEDA_ROLLOUT_TIMEOUT="${KEDA_ROLLOUT_TIMEOUT:-300s}"
 
 kubectl() {
   command kubectl --context "${KUBECTL_CONTEXT}" "$@"
@@ -38,6 +43,6 @@ helm upgrade --install keda-add-ons-http kedacore/keda-add-ons-http \
   --set interceptor.responseHeaderTimeout=120s \
   "${keda_addon_version_args[@]}"
 
-kubectl rollout status deployment/keda-operator -n "${KEDA_NAMESPACE}" --timeout=180s
-kubectl rollout status deployment/keda-add-ons-http-interceptor -n "${KEDA_NAMESPACE}" --timeout=180s
-# kubectl rollout status deployment/keda-add-ons-http-operator -n "${KEDA_NAMESPACE}" --timeout=180s
+rollout_status_with_diagnostics keda-operator "${KEDA_NAMESPACE}" "${KEDA_ROLLOUT_TIMEOUT}"
+rollout_status_with_diagnostics keda-add-ons-http-interceptor "${KEDA_NAMESPACE}" "${KEDA_ROLLOUT_TIMEOUT}"
+# rollout_status_with_diagnostics keda-add-ons-http-operator "${KEDA_NAMESPACE}" "${KEDA_ROLLOUT_TIMEOUT}"

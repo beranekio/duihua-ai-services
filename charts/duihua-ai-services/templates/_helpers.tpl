@@ -44,7 +44,7 @@ false
 {{- $gatewayStore.endpoint -}}
 {{- else if eq (include "duihua.responsesApiStoreService.enabled" .) "true" -}}
 {{- $store := get .Values "responses-api-store" | default dict -}}
-{{- printf "http://%s:%d" (include "duihua.responsesApiStoreService.fullname" .) (int (default 50051 $store.grpc.port)) -}}
+{{- printf "http://%s:%d" (include "duihua.responsesApiStoreService.fullname" .) (int (dig "grpc" "port" 50051 $store)) -}}
 {{- else -}}
 {{- fail "gateway.responsesApiStore.enabled=true requires responsesApiStoreService.enabled=true or gateway.responsesApiStore.endpoint" -}}
 {{- end -}}
@@ -232,11 +232,19 @@ true
 {{- fail "gateway.responsesApiStore.enabled=true requires responsesApiStoreService.enabled=true or gateway.responsesApiStore.endpoint" -}}
 {{- end -}}
 {{- if eq (include "duihua.responsesApiStoreService.enabled" .) "true" -}}
-{{- $desired := include "duihua.background.staleSeconds" . | int -}}
 {{- $store := get .Values "responses-api-store" | default dict -}}
 {{- $configured := dig "store" "staleSeconds" 3600 $store | int -}}
-{{- if ne $desired $configured -}}
-{{- fail (printf "responses-api-store.store.staleSeconds (%v) must match stale tuning (%v); keep both in sync (see values.yaml anchor) or set only responses-api-store.store.staleSeconds" $configured $desired) -}}
+{{- $gateway := .Values.gateway | default dict -}}
+{{- $backgroundJobs := dig "responsesApiStore" "backgroundJobs" dict $gateway -}}
+{{- if hasKey $backgroundJobs "staleSeconds" -}}
+{{- if ne (get $backgroundJobs "staleSeconds" | int) $configured -}}
+{{- fail (printf "gateway.responsesApiStore.backgroundJobs.staleSeconds (%v) must match responses-api-store.store.staleSeconds (%v)" (get $backgroundJobs "staleSeconds") $configured) -}}
+{{- end -}}
+{{- end -}}
+{{- if hasKey .Values.backgroundWorker "staleSeconds" -}}
+{{- if ne (.Values.backgroundWorker.staleSeconds | int) $configured -}}
+{{- fail (printf "backgroundWorker.staleSeconds (%v) must match responses-api-store.store.staleSeconds (%v); set responses-api-store.store.staleSeconds instead" .Values.backgroundWorker.staleSeconds $configured) -}}
+{{- end -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}

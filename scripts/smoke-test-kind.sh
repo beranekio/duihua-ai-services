@@ -418,12 +418,20 @@ test_background_worker_autoscaling() {
     return 0
   fi
 
-  local lag_count max_concurrent_jobs jobs_to_enqueue
-  lag_count="$(kubectl get scaledobject "${scaledobject}" -n "${NAMESPACE}" \
-    -o jsonpath='{.spec.triggers[0].metadata.lagCount}' 2>/dev/null || true)"
-  lag_count="${lag_count:-5}"
-  if [[ ! "${lag_count}" =~ ^[0-9]+$ ]] || [[ "${lag_count}" -lt 1 ]]; then
-    lag_count=5
+  local trigger_type jobs_per_replica max_concurrent_jobs jobs_to_enqueue
+  trigger_type="$(kubectl get scaledobject "${scaledobject}" -n "${NAMESPACE}" \
+    -o jsonpath='{.spec.triggers[0].type}' 2>/dev/null || true)"
+  trigger_type="${trigger_type:-metrics-api}"
+  if [[ "${trigger_type}" == "metrics-api" ]]; then
+    jobs_per_replica="$(kubectl get scaledobject "${scaledobject}" -n "${NAMESPACE}" \
+      -o jsonpath='{.spec.triggers[0].metadata.targetValue}' 2>/dev/null || true)"
+  else
+    jobs_per_replica="$(kubectl get scaledobject "${scaledobject}" -n "${NAMESPACE}" \
+      -o jsonpath='{.spec.triggers[0].metadata.lagCount}' 2>/dev/null || true)"
+  fi
+  jobs_per_replica="${jobs_per_replica:-5}"
+  if [[ ! "${jobs_per_replica}" =~ ^[0-9]+$ ]] || [[ "${jobs_per_replica}" -lt 1 ]]; then
+    jobs_per_replica=5
   fi
   max_concurrent_jobs="$(kubectl get deployment "${deployment}" -n "${NAMESPACE}" \
     -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="BACKGROUND_QUEUE_MAX_CONCURRENT_JOBS")].value}' 2>/dev/null || true)"
@@ -432,9 +440,9 @@ test_background_worker_autoscaling() {
     max_concurrent_jobs=1
   fi
   # Account for running workers claiming entries before KEDA polls.
-  jobs_to_enqueue=$(((initial_replicas + 1) * lag_count + initial_replicas * max_concurrent_jobs + 1))
+  jobs_to_enqueue=$(((initial_replicas + 1) * jobs_per_replica + initial_replicas * max_concurrent_jobs + 1))
 
-  echo "Enqueueing ${jobs_to_enqueue} background jobs to grow stream lag (lagCount=${lag_count}, replicas=${initial_replicas}, maxConcurrentJobs=${max_concurrent_jobs})..."
+  echo "Enqueueing ${jobs_to_enqueue} background jobs to grow queue workload (driver=${trigger_type}, jobsPerReplica=${jobs_per_replica}, replicas=${initial_replicas}, maxConcurrentJobs=${max_concurrent_jobs})..."
   local job_index
   for job_index in $(seq 1 "${jobs_to_enqueue}"); do
     post_response "{\"model\":\"${DEFAULT_MODEL}\",\"input\":\"Autoscale lag test ${job_index}.\",\"background\":true}" >/dev/null

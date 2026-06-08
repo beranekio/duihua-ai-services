@@ -6,6 +6,9 @@ responsesApiStoreService:
 
 responses-api-store:
   # Image repository/tag are set by the published OCI chart (git-sha tag).
+  metrics:
+    enabled: true
+    port: 8080
   store:
     keyPrefix: responses-api-store:responses
     ttlSeconds: 86400
@@ -49,6 +52,8 @@ gateway:
     enabled: false
     # Override the gRPC endpoint; when empty, uses the subchart Service.
     endpoint: ""
+    # Override the store metrics URL for KEDA when responsesApiStoreService.enabled=false.
+    metricsUrl: ""
 
 backgroundWorker:
   # Consume background=true Responses API jobs from a Valkey stream when the
@@ -71,20 +76,21 @@ backgroundWorker:
   terminationGracePeriodSeconds: 665
   upstreamTimeoutSeconds: "600"
   autoscaling:
-    # Scale the worker Deployment from Valkey stream consumer-group lag via KEDA.
-    # Requires KEDA installed in the cluster (no HTTP add-on needed for this scaler).
-    # Use lagCount + activationLagCount for scale-to-zero; Valkey/Redis 7+ is required.
-    # activationLagCount must be 0 for the first queued job to wake a worker (KEDA uses >).
-    # Lag-only scaling can scale down while jobs are in-flight; see issue #52 and tune
-    # scaledownPeriod relative to upstream job duration when min is 0.
+    # Scale the worker Deployment via KEDA (no HTTP add-on needed).
+    # driver store-metrics: queries responses-api-store GET /metrics/background-queue (default).
+    # driver redis-streams: legacy Valkey stream lag scaler (deprecated).
     enabled: false
+    driver: store-metrics
+    jobsPerReplica: 5
+    activationTargetValue: 0
+    # Deprecated aliases for redis-streams driver and older values files.
     lagCount: 5
     activationLagCount: 0
+    # Override when responsesApiStoreService.enabled=false or metrics are exposed elsewhere.
+    metricsUrl: ""
     scaledownPeriod: 300
     pollingInterval: 15
-    # Set enableTLS or use a rediss:// responseIdStoreUrl for TLS. passwordFromEnv names an
-    # env var on the worker Deployment (for example from a Secret); KEDA reads it from the
-    # scale target pod.
+    # redis-streams driver only: TLS/password for direct Valkey access.
     enableTLS: false
     passwordFromEnv: ""
     replicas:

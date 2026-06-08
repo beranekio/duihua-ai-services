@@ -100,13 +100,62 @@ false
 {{- end -}}
 {{- end -}}
 
-{{- define "duihua.background.autoscaling.activationLagCount" -}}
+{{- define "duihua.background.autoscaling.driver" -}}
 {{- $autoscaling := .Values.backgroundWorker.autoscaling | default dict -}}
-{{- if hasKey $autoscaling "activationLagCount" -}}
+{{- $driver := $autoscaling.driver | default "store-metrics" -}}
+{{- $driver -}}
+{{- end -}}
+
+{{- define "duihua.responsesApiStoreMetricsPort" -}}
+{{- $metrics := (index .Values "responses-api-store").metrics | default dict -}}
+{{- if hasKey $metrics "port" -}}
+{{- $metrics.port -}}
+{{- else -}}
+8080
+{{- end -}}
+{{- end -}}
+
+{{- define "duihua.background.autoscaling.metricsUrl" -}}
+{{- $autoscaling := .Values.backgroundWorker.autoscaling | default dict -}}
+{{- if $autoscaling.metricsUrl -}}
+{{- $autoscaling.metricsUrl -}}
+{{- else if .Values.gateway.responsesApiStore.metricsUrl -}}
+{{- .Values.gateway.responsesApiStore.metricsUrl -}}
+{{- else if eq (include "duihua.responsesApiStoreService.enabled" .) "true" -}}
+{{- $metrics := (index .Values "responses-api-store").metrics | default dict -}}
+{{- if eq ($metrics.enabled | default true) false -}}
+{{- fail "responses-api-store.metrics.enabled must be true when backgroundWorker.autoscaling.driver is store-metrics (or set backgroundWorker.autoscaling.metricsUrl)" -}}
+{{- end -}}
+{{- printf "http://%s.%s.svc.cluster.local:%v/metrics/background-queue?consumer_group=%s" (include "duihua.responsesApiStoreService.fullname" .) .Release.Namespace (include "duihua.responsesApiStoreMetricsPort" .) .Values.backgroundWorker.consumerGroup -}}
+{{- else -}}
+{{- fail "backgroundWorker.autoscaling.metricsUrl must be set when responsesApiStoreService.enabled is false and backgroundWorker.autoscaling.driver is store-metrics" -}}
+{{- end -}}
+{{- end -}}
+
+{{- define "duihua.background.autoscaling.jobsPerReplica" -}}
+{{- $autoscaling := .Values.backgroundWorker.autoscaling | default dict -}}
+{{- if hasKey $autoscaling "jobsPerReplica" -}}
+{{- $autoscaling.jobsPerReplica -}}
+{{- else if hasKey $autoscaling "lagCount" -}}
+{{- $autoscaling.lagCount -}}
+{{- else -}}
+5
+{{- end -}}
+{{- end -}}
+
+{{- define "duihua.background.autoscaling.activationTargetValue" -}}
+{{- $autoscaling := .Values.backgroundWorker.autoscaling | default dict -}}
+{{- if hasKey $autoscaling "activationTargetValue" -}}
+{{- $autoscaling.activationTargetValue -}}
+{{- else if hasKey $autoscaling "activationLagCount" -}}
 {{- $autoscaling.activationLagCount -}}
 {{- else -}}
 0
 {{- end -}}
+{{- end -}}
+
+{{- define "duihua.background.autoscaling.activationLagCount" -}}
+{{- include "duihua.background.autoscaling.activationTargetValue" . -}}
 {{- end -}}
 
 {{- define "duihua.background.autoscaling.scaledownPeriod" -}}

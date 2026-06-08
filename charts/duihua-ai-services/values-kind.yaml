@@ -47,8 +47,9 @@ backgroundWorker:
   blockMs: 400
   autoscaling:
     enabled: true
-    lagCount: 1
-    activationLagCount: 0
+    driver: store-metrics
+    jobsPerReplica: 1
+    activationTargetValue: 0
     pollingInterval: 5
     scaledownPeriod: 60
     replicas:

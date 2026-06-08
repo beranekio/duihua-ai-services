@@ -107,7 +107,8 @@ false
 {{- end -}}
 
 {{- define "duihua.responsesApiStoreMetricsPort" -}}
-{{- $metrics := (index .Values "responses-api-store").metrics | default dict -}}
+{{- $store := get .Values "responses-api-store" | default dict -}}
+{{- $metrics := $store.metrics | default dict -}}
 {{- if hasKey $metrics "port" -}}
 {{- $metrics.port -}}
 {{- else -}}
@@ -117,16 +118,19 @@ false
 
 {{- define "duihua.background.autoscaling.metricsUrl" -}}
 {{- $autoscaling := .Values.backgroundWorker.autoscaling | default dict -}}
+{{- $gatewayStore := dig "responsesApiStore" dict .Values.gateway -}}
 {{- if $autoscaling.metricsUrl -}}
 {{- $autoscaling.metricsUrl -}}
-{{- else if .Values.gateway.responsesApiStore.metricsUrl -}}
-{{- .Values.gateway.responsesApiStore.metricsUrl -}}
+{{- else if $gatewayStore.metricsUrl -}}
+{{- $gatewayStore.metricsUrl -}}
 {{- else if eq (include "duihua.responsesApiStoreService.enabled" .) "true" -}}
-{{- $metrics := (index .Values "responses-api-store").metrics | default dict -}}
-{{- if eq ($metrics.enabled | default true) false -}}
+{{- $store := get .Values "responses-api-store" | default dict -}}
+{{- $metrics := $store.metrics | default dict -}}
+{{- if and (hasKey $metrics "enabled") (not $metrics.enabled) -}}
 {{- fail "responses-api-store.metrics.enabled must be true when backgroundWorker.autoscaling.driver is store-metrics (or set backgroundWorker.autoscaling.metricsUrl)" -}}
 {{- end -}}
-{{- printf "http://%s.%s.svc.cluster.local:%v/metrics/background-queue?consumer_group=%s" (include "duihua.responsesApiStoreService.fullname" .) .Release.Namespace (include "duihua.responsesApiStoreMetricsPort" .) .Values.backgroundWorker.consumerGroup -}}
+{{- $consumerGroup := .Values.backgroundWorker.consumerGroup | urlquery -}}
+{{- printf "http://%s.%s.svc.cluster.local:%v/metrics/background-queue?consumer_group=%s" (include "duihua.responsesApiStoreService.fullname" .) .Release.Namespace (include "duihua.responsesApiStoreMetricsPort" .) $consumerGroup -}}
 {{- else -}}
 {{- fail "backgroundWorker.autoscaling.metricsUrl must be set when responsesApiStoreService.enabled is false and backgroundWorker.autoscaling.driver is store-metrics" -}}
 {{- end -}}

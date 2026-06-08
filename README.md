@@ -118,7 +118,7 @@ responses-api-store:
     url: rediss://your-redis.example:6379/0
 ```
 
-For KEDA background-worker autoscaling with the legacy `redis-streams` driver against external Redis, set `gateway.responsesApiStore.redisAddress` to a `host:port` KEDA can reach from its namespace. The default `store-metrics` driver queries the responses-api-store HTTP metrics endpoint instead and does not require Valkey access from KEDA.
+With external Redis above, keep the default `store-metrics` autoscaling driver: KEDA queries the responses-api-store HTTP metrics endpoint and does not need Valkey access. The legacy `redis-streams` driver still points at the chart-managed Valkey Service name when `responsesApiStoreService.enabled=true`, even if bundled Valkey is disabled; use `store-metrics` here or see issue #58 before opting into `redis-streams`.
 
 For local Docker Compose, set `RESPONSES_API_STORE_ENABLED=true` when starting the stack to exercise persisted follow-up Responses API calls. Streaming responses are persisted after their `response.completed` event.
 
@@ -148,7 +148,7 @@ responses-api-store:
 
 Set `replicas.min` to `1` or higher to keep at least one worker pod warm. Use `activationTargetValue: 0` so the first queued job wakes a worker. Tune `jobsPerReplica` (average queue workload target per replica); lower values scale up sooner. When autoscaling is enabled, KEDA owns replica counts, the chart omits `spec.replicas`, and `backgroundWorker.replicaCount` is ignored. With `replicas.min: 0`, the gateway ensures the stream consumer group via the responses-api-store gRPC service on startup so workers can claim jobs once scaled up.
 
-Legacy `driver: redis-streams` remains available for migration. It scales from Redis Streams consumer-group lag and requires Valkey/Redis 7+ plus `lagCount` / `activationLagCount` (aliases of `jobsPerReplica` / `activationTargetValue`). For external Redis with that driver, configure `responses-api-store.redis.url` and/or `backgroundWorker.autoscaling.passwordFromEnv`. When the store subchart is disabled, set `backgroundWorker.autoscaling.metricsUrl` for the `store-metrics` driver.
+Legacy `driver: redis-streams` remains available for migration. It scales from Redis Streams consumer-group lag and requires Valkey/Redis 7+ plus `lagCount` / `activationLagCount` (aliases of `jobsPerReplica` / `activationTargetValue`). With bundled Valkey disabled, `redis-streams` does not automatically follow `responses-api-store.redis.url`; track issue #58 or disable the store subchart and set `gateway.responsesApiStore.redisAddress`. When the store subchart is disabled, set `backgroundWorker.autoscaling.metricsUrl` for the `store-metrics` driver.
 
 ## Cloud-provider independence
 

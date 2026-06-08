@@ -42,8 +42,6 @@ backgroundWorker:
     repository: duihua-background-worker
     tag: kind
     pullPolicy: IfNotPresent
-  # Deprecated alias of responses-api-store.store.staleSeconds.
-  staleSeconds: 3600
   # Faster pending retries for local smoke tests (live deliveries retry once before processing).
   pendingRetrySeconds: 5
   # Keep below the responses-api-store Valkey client response timeout (500ms).

@@ -59,7 +59,7 @@ Creation requests that explicitly set `store: false` are not persisted by the ga
 
 When `gateway.responsesApiStore.enabled=true` and `backgroundWorker.enabled=true` (default), `POST /v1/responses` with `background=true` returns immediately with a `queued` response stored in Valkey and enqueues the `response_id` on a Valkey stream. A `duihua-background-worker` Deployment consumes the stream, issues a synchronous upstream `/responses` call with `background=false` and `store=false`, and updates Valkey when processing completes. Clients poll `GET /v1/responses/{id}` until the status leaves `queued` or `in_progress`. `POST /v1/responses/{id}/cancel` marks the stored response `cancelled` in Valkey (workers must respect terminal statuses).
 
-This path does not change inference Deployments or vLLM flags. Tune `responses-api-store.store.staleSeconds` for stale `in_progress` reconciliation on `GET /v1/responses/{id}` (`backgroundWorker.staleSeconds` is a deprecated alias kept in sync in chart defaults). Stream retention (trim after `XACK`) is handled by the background-worker consumer, not gateway `XADD`.
+This path does not change inference Deployments or vLLM flags. Tune `responses-api-store.store.staleSeconds` for stale `in_progress` reconciliation on `GET /v1/responses/{id}` (`backgroundWorker.staleSeconds` is a deprecated alias; Helm fails at render time when it is set to a value that differs from the subchart setting). Stream retention (trim after `XACK`) is handled by the background-worker consumer, not gateway `XADD`.
 
 #### Background worker autoscaling (optional)
 

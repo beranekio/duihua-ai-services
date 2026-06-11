@@ -5,6 +5,10 @@ configValidation:
   # Turn on in environment overlays such as values-kind.yaml.
   enabled: false
 
+deployKindProbe:
+  # Render deploy-kind-probe.yaml for scripts/deploy-kind.sh only.
+  enabled: false
+
 responsesApiStoreService:
   # Deploy the beranekio/responses-api-store gRPC service subchart from GHCR
   # (oci://ghcr.io/beranekio/charts). Gateway and background worker talk to

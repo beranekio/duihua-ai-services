@@ -9,7 +9,6 @@ NAMESPACE="${NAMESPACE:-duihua}"
 CHART_PATH="${CHART_PATH:-$ROOT_DIR/charts/duihua-ai-services}"
 VALUES_FILE="${VALUES_FILE:-$ROOT_DIR/charts/duihua-ai-services/values-kind.yaml}"
 EXTRA_VALUES_FILE="${EXTRA_VALUES_FILE:-}"
-GATEWAY_STORE_ENDPOINT="${GATEWAY_STORE_ENDPOINT:-http://${RELEASE_NAME}-responses-api-store:50051}"
 BACKGROUND_WORKER_IMAGE_REPO="${BACKGROUND_WORKER_IMAGE_REPO:-duihua-background-worker}"
 BACKGROUND_WORKER_IMAGE_TAG="${BACKGROUND_WORKER_IMAGE_TAG:-local}"
 INFERENCE_ENABLED="${INFERENCE_ENABLED:-true}"
@@ -20,23 +19,58 @@ if [[ -n "${EXTRA_VALUES_FILE}" ]]; then
   helm_values_args+=(-f "${EXTRA_VALUES_FILE}")
 fi
 
-PARENT_SA_NAME="${RELEASE_NAME}-duihua-ai-services"
 helm_set_args=(
-  --set "duihua-gateway.responsesApiStore.endpoint=${GATEWAY_STORE_ENDPOINT}"
-  --set "duihua-gateway.serviceAccount.create=false"
-  --set "duihua-gateway.serviceAccount.name=${PARENT_SA_NAME}"
   --set "backgroundWorker.image.repository=${BACKGROUND_WORKER_IMAGE_REPO}"
   --set "backgroundWorker.image.tag=${BACKGROUND_WORKER_IMAGE_TAG}"
   --set "inference.enabled=${INFERENCE_ENABLED}"
 )
 
-MODEL_UPSTREAMS_VALUES_FILE=""
-cleanup_model_upstreams_values() {
-  if [[ -n "${MODEL_UPSTREAMS_VALUES_FILE}" && -f "${MODEL_UPSTREAMS_VALUES_FILE}" ]]; then
-    rm -f "${MODEL_UPSTREAMS_VALUES_FILE}"
+GATEWAY_ENV_VALUES_FILE=""
+cleanup_gateway_env_values() {
+  if [[ -n "${GATEWAY_ENV_VALUES_FILE}" && -f "${GATEWAY_ENV_VALUES_FILE}" ]]; then
+    rm -f "${GATEWAY_ENV_VALUES_FILE}"
   fi
 }
-trap cleanup_model_upstreams_values EXIT
+trap cleanup_gateway_env_values EXIT
+
+probe_data() {
+  local key="$1"
+  render_deploy_kind_probe | awk -v key="${key}" '
+    $0 ~ "^  " key ": " {
+      sub("^  " key ": ", "")
+      gsub(/^"/, "")
+      gsub(/"$/, "")
+      print
+      exit
+    }'
+}
+
+render_deploy_kind_probe() {
+  helm template "${RELEASE_NAME}" "${CHART_PATH}" \
+    "${helm_values_args[@]}" \
+    --set "deployKindProbe.enabled=true" \
+    --set "inference.enabled=${INFERENCE_ENABLED}" \
+    --show-only templates/deploy-kind-probe.yaml
+}
+
+yaml_double_quote() {
+  local value="$1"
+  value="${value//\\/\\\\}"
+  value="${value//\"/\\\"}"
+  printf '%s' "${value}"
+}
+
+write_gateway_model_upstreams_file() {
+  local file="$1"
+  local upstreams="$2"
+  local quoted
+  quoted="$(yaml_double_quote "${upstreams}")"
+  cat > "${file}" <<EOF
+duihua-gateway:
+  env:
+    modelUpstreams: "${quoted}"
+EOF
+}
 
 kubectl() {
   if [[ -n "${KUBECTL_CONTEXT}" ]]; then
@@ -48,65 +82,43 @@ kubectl() {
 
 "${ROOT_DIR}/scripts/update-helm-dependencies.sh"
 
-if [[ "${INFERENCE_ENABLED}" == "true" ]]; then
-  values_files_for_python=("${VALUES_FILE}")
-  if [[ -n "${EXTRA_VALUES_FILE}" ]]; then
-    values_files_for_python+=("${EXTRA_VALUES_FILE}")
+PARENT_FULLNAME="$(probe_data duihuaFullname)"
+GATEWAY_FULLNAME="$(probe_data gatewayFullname)"
+if [[ -z "${PARENT_FULLNAME}" || -z "${GATEWAY_FULLNAME}" ]]; then
+  echo "Failed to render deploy-kind probe values from Helm." >&2
+  exit 1
+fi
+
+if [[ "$(probe_data parentServiceAccountCreate)" == "true" ]]; then
+  helm_set_args+=(
+    --set "duihua-gateway.serviceAccount.create=false"
+    --set "duihua-gateway.serviceAccount.name=$(probe_data serviceAccountName)"
+  )
+fi
+
+if [[ -v GATEWAY_STORE_ENDPOINT ]]; then
+  helm_set_args+=(--set "duihua-gateway.responsesApiStore.endpoint=${GATEWAY_STORE_ENDPOINT}")
+else
+  configured_store_endpoint="$(probe_data configuredStoreEndpoint)"
+  if [[ -z "${configured_store_endpoint}" && "$(probe_data responsesApiStoreServiceEnabled)" == "true" ]]; then
+    helm_set_args+=(
+      --set "duihua-gateway.responsesApiStore.endpoint=http://${RELEASE_NAME}-responses-api-store:50051"
+    )
   fi
-  MODEL_UPSTREAMS="$(python3 - "${RELEASE_NAME}" "${values_files_for_python[@]}" <<'PY'
-import sys
-import yaml
+fi
 
-release = sys.argv[1]
-merged: dict = {}
-for path in sys.argv[2:]:
-    with open(path, encoding="utf-8") as handle:
-        doc = yaml.safe_load(handle) or {}
-    for key, value in doc.items():
-        if isinstance(value, dict) and isinstance(merged.get(key), dict):
-            stack = [(merged[key], value)]
-            while stack:
-                left, right = stack.pop()
-                for nested_key, nested_value in right.items():
-                    if (
-                        nested_key in left
-                        and isinstance(left[nested_key], dict)
-                        and isinstance(nested_value, dict)
-                    ):
-                        stack.append((left[nested_key], nested_value))
-                    else:
-                        left[nested_key] = nested_value
-        else:
-            merged[key] = value
-
-models = merged.get("inference", {}).get("models", [])
-parent = f"{release}-duihua-ai-services"
-parts = [
-    f"{model['name']}=http://{parent}-inference-{index}-proxy:8080/v1"
-    for index, model in enumerate(models)
-]
-print(",".join(parts), end="")
-PY
-)"
+GATEWAY_ENV_VALUES_FILE="$(mktemp)"
+if [[ "${INFERENCE_ENABLED}" == "true" ]]; then
+  MODEL_UPSTREAMS="$(probe_data modelUpstreams)"
   if [[ -z "${MODEL_UPSTREAMS}" ]]; then
     echo "Failed to compute duihua-gateway.env.modelUpstreams for inference.enabled=true" >&2
     exit 1
   fi
-  MODEL_UPSTREAMS_VALUES_FILE="$(mktemp)"
-  python3 - "${MODEL_UPSTREAMS_VALUES_FILE}" "${MODEL_UPSTREAMS}" <<'PY'
-import sys
-
-import yaml
-
-with open(sys.argv[1], "w", encoding="utf-8") as handle:
-    yaml.safe_dump(
-        {"duihua-gateway": {"env": {"modelUpstreams": sys.argv[2]}}},
-        handle,
-        default_flow_style=False,
-    )
-PY
-  helm_values_args+=(-f "${MODEL_UPSTREAMS_VALUES_FILE}")
+  write_gateway_model_upstreams_file "${GATEWAY_ENV_VALUES_FILE}" "${MODEL_UPSTREAMS}"
+else
+  write_gateway_model_upstreams_file "${GATEWAY_ENV_VALUES_FILE}" ""
 fi
+helm_values_args+=(-f "${GATEWAY_ENV_VALUES_FILE}")
 
 echo "Deploying Helm release '${RELEASE_NAME}' into namespace '${NAMESPACE}'..."
 helm upgrade --install "${RELEASE_NAME}" "${CHART_PATH}" \
@@ -122,6 +134,7 @@ RELEASE_NAME="${RELEASE_NAME}" NAMESPACE="${NAMESPACE}" TIMEOUT="${TIMEOUT}" \
 
 RELEASE_NAME="${RELEASE_NAME}" NAMESPACE="${NAMESPACE}" TIMEOUT="${TIMEOUT}" \
   KUBECTL_CONTEXT="${KUBECTL_CONTEXT}" GATEWAY_DEPLOYMENT_REQUIRED=true \
+  GATEWAY_DEPLOYMENT="${GATEWAY_FULLNAME}" \
   "${ROOT_DIR}/scripts/restart-gateway-deployment.sh"
 
 RELEASE_NAME="${RELEASE_NAME}" NAMESPACE="${NAMESPACE}" TIMEOUT="${TIMEOUT}" \
@@ -135,7 +148,7 @@ RELEASE_NAME="${RELEASE_NAME}" NAMESPACE="${NAMESPACE}" TIMEOUT="${TIMEOUT}" \
 if [[ "${INFERENCE_ENABLED}" == "true" ]]; then
   echo "Checking rollout status for inference deployments..."
   inference_deployments="$(kubectl get deployment -n "${NAMESPACE}" -o name \
-    | grep "^deployment.apps/${RELEASE_NAME}-duihua-ai-services-inference-" || true)"
+    | grep "^deployment.apps/${PARENT_FULLNAME}-inference-" || true)"
 
   if [[ -z "${inference_deployments}" ]]; then
     echo "No inference deployments found for release '${RELEASE_NAME}' in namespace '${NAMESPACE}'." >&2

@@ -2,16 +2,16 @@
 # No checkout of beranekio/duihua-gateway is required.
 #
 # Gateway only (point UPSTREAM_BASE_URL at host-local or external inference):
-#   docker compose -f docker-compose.gateway-local.yml up
+#   docker compose up
 #
 # With bundled vLLM CPU upstream:
-#   docker compose -f docker-compose.gateway-local.yml --profile inference up
+#   docker compose --profile inference up
 #
 # With Responses API store + Valkey:
-#   docker compose -f docker-compose.gateway-local.yml --profile store up
+#   docker compose --profile store up
 #
 # Full local stack (inference + store):
-#   docker compose -f docker-compose.gateway-local.yml --profile inference --profile store up
+#   docker compose --profile inference --profile store up
 
 services:
   duihua-gateway:

@@ -26,11 +26,8 @@ responses-api-store:
       port: 6379
 
 duihua-gateway:
+  # Image repository/tag are set by the published OCI chart (git-sha tag).
   replicaCount: 1
-  image:
-    repository: ghcr.io/beranekio/duihua-gateway
-    tag: "latest"
-    pullPolicy: IfNotPresent
   service:
     type: ClusterIP
     port: 80

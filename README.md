@@ -54,8 +54,6 @@ helm dependency update charts/duihua-ai-services
 helm upgrade --install duihua charts/duihua-ai-services \
   --namespace duihua \
   --create-namespace \
-  --set duihua-gateway.image.repository=ghcr.io/beranekio/duihua-gateway \
-  --set duihua-gateway.image.tag=latest \
   --set backgroundWorker.image.repository=ghcr.io/<org>/duihua-background-worker \
   --set backgroundWorker.image.tag=0.1.0
 ```
@@ -252,6 +250,7 @@ Useful environment variables:
 - `NAMESPACE` (default: `duihua`)
 - `GATEWAY_IMAGE_REPO` (default: `duihua-gateway`)
 - `GATEWAY_IMAGE_TAG` (default: `local`)
+- `GATEWAY_STORE_ENDPOINT` (default: `http://${RELEASE_NAME}-responses-api-store:50051`, used by `scripts/deploy-kind.sh`)
 - `BACKGROUND_WORKER_IMAGE_REPO` (default: `duihua-background-worker`)
 - `BACKGROUND_WORKER_IMAGE_TAG` (default: same as `GATEWAY_IMAGE_TAG`)
 - `GATEWAY_ROLLOUT_RESTART` (default: `true`, used by `scripts/build-and-load-images.sh` and `scripts/deploy-kind.sh`)

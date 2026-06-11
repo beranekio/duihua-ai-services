@@ -11,7 +11,7 @@ responses-api-store:
   store:
     staleSeconds: 3600
 
-gateway:
+duihua-gateway:
   image:
     repository: duihua-gateway
     tag: kind
@@ -31,8 +31,13 @@ gateway:
     responseIdStoreTtlSeconds: "86400"
     defaultModel: HuggingFaceTB/SmolLM2-135M-Instruct
     upstreamBaseUrl: http://127.0.0.1:9/v1
+    modelUpstreams: HuggingFaceTB/SmolLM2-135M-Instruct=http://duihua-duihua-ai-services-inference-0-proxy:8080/v1
   responsesApiStore:
     enabled: true
+    endpoint: http://duihua-responses-api-store:50051
+    backgroundJobs:
+      enabled: true
+      consumerGroup: duihua-background
 
 backgroundWorker:
   enabled: true

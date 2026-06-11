@@ -19,9 +19,9 @@ spec:
             pathType: {{ .pathType }}
             backend:
               service:
-                name: {{ include "duihua.fullname" $ }}-gateway
+                name: {{ include "duihua.gateway.fullname" $ }}
                 port:
-                  number: {{ $.Values.gateway.service.port }}
+                  number: {{ dig "service" "port" 80 (get $.Values "duihua-gateway" | default dict) }}
           {{- end }}
     {{- end }}
 {{- end }}

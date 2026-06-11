@@ -37,8 +37,9 @@ helm upgrade --install "${RELEASE_NAME}" "${CHART_PATH}" \
   --namespace "${NAMESPACE}" \
   --create-namespace \
   "${helm_values_args[@]}" \
-  --set gateway.image.repository="${GATEWAY_IMAGE_REPO}" \
-  --set gateway.image.tag="${GATEWAY_IMAGE_TAG}" \
+  --set duihua-gateway.image.repository="${GATEWAY_IMAGE_REPO}" \
+  --set duihua-gateway.image.tag="${GATEWAY_IMAGE_TAG}" \
+  --set duihua-gateway.responsesApiStore.endpoint="http://${RELEASE_NAME}-responses-api-store:50051" \
   --set backgroundWorker.image.repository="${BACKGROUND_WORKER_IMAGE_REPO}" \
   --set backgroundWorker.image.tag="${BACKGROUND_WORKER_IMAGE_TAG}" \
   --set inference.enabled="${INFERENCE_ENABLED}"

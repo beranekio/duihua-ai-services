@@ -4,7 +4,7 @@ Duihua AI Services is an OpenAI API-compatible platform for serving open-source 
 
 ## Architecture
 
-- **Gateway (Rust, Axum)**: Provides OpenAI-compatible endpoints (`/v1/models`, `/v1/chat/completions`, `/v1/responses`, `/v1/embeddings`) and proxies requests to a model runtime.
+- **Gateway (Rust, Axum)**: Published as [beranekio/duihua-gateway](https://github.com/beranekio/duihua-gateway) and consumed via the `duihua-gateway` Helm subchart. Provides OpenAI-compatible endpoints and proxies requests to model runtimes.
 - **Inference runtime**: Optional bundled `vllm/vllm-openai` deployment for OSS model hosting.
 - **Responses API store (gRPC)**: Persists completed Responses API objects and conversation input via the `responses-api-store` gRPC service (Valkey/Redis-backed).
 - **Background worker (Rust)**: Consumes a Valkey stream queue and completes `background=true` Responses API requests via synchronous upstream calls.
@@ -12,8 +12,8 @@ Duihua AI Services is an OpenAI API-compatible platform for serving open-source 
 
 ## Repository layout
 
-- `services/gateway`: Rust API gateway service.
 - `services/background-worker`: Valkey stream consumer for background Responses API requests.
+- Gateway source and image: [beranekio/duihua-gateway](https://github.com/beranekio/duihua-gateway) (OCI subchart `oci://ghcr.io/beranekio/charts/duihua-gateway`).
 
 - `charts/duihua-ai-services`: Helm chart for full deployment.
 - `scripts/`: Local kind bootstrap and deployment helpers.
@@ -21,12 +21,12 @@ Duihua AI Services is an OpenAI API-compatible platform for serving open-source 
 
 ## Quick start
 
-### 1) Build gateway and background worker images
+### 1) Build images
+
+Gateway images are published from [beranekio/duihua-gateway](https://github.com/beranekio/duihua-gateway) (`ghcr.io/beranekio/duihua-gateway`). Build the background worker from this repo:
 
 ```bash
-docker build -t ghcr.io/<org>/duihua-gateway:0.1.0 --file services/gateway/Dockerfile services
 docker build -t ghcr.io/<org>/duihua-background-worker:0.1.0 --file services/background-worker/Dockerfile services
-docker push ghcr.io/<org>/duihua-gateway:0.1.0
 docker push ghcr.io/<org>/duihua-background-worker:0.1.0
 ```
 
@@ -50,11 +50,12 @@ helm upgrade --install keda-add-ons-http kedacore/keda-add-ons-http \
 Then deploy Duihua:
 
 ```bash
+helm dependency update charts/duihua-ai-services
 helm upgrade --install duihua charts/duihua-ai-services \
   --namespace duihua \
   --create-namespace \
-  --set gateway.image.repository=ghcr.io/<org>/duihua-gateway \
-  --set gateway.image.tag=0.1.0 \
+  --set duihua-gateway.image.repository=ghcr.io/beranekio/duihua-gateway \
+  --set duihua-gateway.image.tag=latest \
   --set backgroundWorker.image.repository=ghcr.io/<org>/duihua-background-worker \
   --set backgroundWorker.image.tag=0.1.0
 ```
@@ -62,7 +63,7 @@ helm upgrade --install duihua charts/duihua-ai-services \
 ### 3) Call the API
 
 ```bash
-kubectl port-forward -n duihua svc/duihua-duihua-ai-services-gateway 8080:80
+kubectl port-forward -n duihua svc/duihua-duihua-gateway 8080:80
 curl http://127.0.0.1:8080/v1/models
 
 curl http://127.0.0.1:8080/v1/responses \
@@ -82,9 +83,10 @@ To enable it with the chart-managed `responses-api-store` subchart and bundled V
 responsesApiStoreService:
   enabled: true
 
-gateway:
+duihua-gateway:
   responsesApiStore:
     enabled: true
+    endpoint: http://duihua-responses-api-store:50051
   env:
     responseIdStoreTtlSeconds: "86400"
 
@@ -103,7 +105,7 @@ inference:
         max: 1
 ```
 
-Gateway and background worker receive `RESPONSES_API_STORE_ENDPOINT` automatically. Redis connection settings belong to the `responses-api-store` subchart, not gateway env vars. When `gateway.responsesApiStore.enabled=true`, also enable `responsesApiStoreService.enabled=true` or set `gateway.responsesApiStore.endpoint` to an external gRPC URL; Helm fails at render time for unsupported combinations. Tune stale `in_progress` reconciliation via `responses-api-store.store.staleSeconds` (`backgroundWorker.staleSeconds` is a deprecated alias; Helm fails at render time when it is set to a value that differs from the subchart setting).
+Gateway and background worker receive `RESPONSES_API_STORE_ENDPOINT` via `duihua-gateway.responsesApiStore.endpoint` (set explicitly or use `scripts/deploy-kind.sh`, which wires the subchart Service). Redis connection settings belong to the `responses-api-store` subchart, not gateway env vars. When `duihua-gateway.responsesApiStore.enabled=true`, also enable `responsesApiStoreService.enabled=true` or set `duihua-gateway.responsesApiStore.endpoint` to an external gRPC URL; Helm fails at render time for unsupported combinations. Tune stale `in_progress` reconciliation via `responses-api-store.store.staleSeconds` (`backgroundWorker.staleSeconds` is a deprecated alias; Helm fails at render time when it is set to a value that differs from the subchart setting).
 
 To use an external Valkey/Redis-compatible service instead, keep the subchart enabled, disable bundled Valkey, and point the store service at your cluster:
 
@@ -120,9 +122,9 @@ responses-api-store:
 
 With external Redis above, keep the default `store-metrics` autoscaling driver: KEDA queries the responses-api-store HTTP metrics endpoint and does not need Valkey access. The legacy `redis-streams` driver still points at the chart-managed Valkey Service name when `responsesApiStoreService.enabled=true`, even if bundled Valkey is disabled; use `store-metrics` here or see issue #58 before opting into `redis-streams`.
 
-For local Docker Compose, set `RESPONSES_API_STORE_ENABLED=true` when starting the stack to exercise persisted follow-up Responses API calls. Streaming responses are persisted after their `response.completed` event.
+For local Docker Compose, use `docker-compose.gateway-local.yml` (includes [beranekio/duihua-gateway](https://github.com/beranekio/duihua-gateway)) or run that repo's `docker-compose.yml` directly.
 
-With the Helm chart, `background=true` Responses API requests are enqueued on a Valkey stream (via the store service) and processed by the `duihua-background-worker` Deployment (synchronous upstream call per message, result written back through the store service). On rollout restart the worker drains in-flight jobs on SIGTERM before exit; set `backgroundWorker.terminationGracePeriodSeconds` above `backgroundWorker.upstreamTimeoutSeconds` plus `backgroundWorker.blockMs` and a safety margin (chart default 665s). The worker logs a recommended grace period at startup. Enable `responsesApiStoreService.enabled=true`, `gateway.responsesApiStore.enabled=true`, and `backgroundWorker.enabled=true`. The kind workflow (`values-kind.yaml`) enables the store subchart, bundled Valkey, background worker, queue settings, and KEDA store-metrics autoscaling for local end-to-end background completion testing.
+With the Helm chart, `background=true` Responses API requests are enqueued on a Valkey stream (via the store service) and processed by the `duihua-background-worker` Deployment (synchronous upstream call per message, result written back through the store service). On rollout restart the worker drains in-flight jobs on SIGTERM before exit; set `backgroundWorker.terminationGracePeriodSeconds` above `backgroundWorker.upstreamTimeoutSeconds` plus `backgroundWorker.blockMs` and a safety margin (chart default 665s). The worker logs a recommended grace period at startup. Enable `responsesApiStoreService.enabled=true`, `duihua-gateway.responsesApiStore.enabled=true`, and `backgroundWorker.enabled=true`. The kind workflow (`values-kind.yaml`) enables the store subchart, bundled Valkey, background worker, queue settings, and KEDA store-metrics autoscaling for local end-to-end background completion testing.
 
 ### KEDA autoscaling for background workers (optional)
 
@@ -148,7 +150,7 @@ responses-api-store:
 
 Set `replicas.min` to `1` or higher to keep at least one worker pod warm. Use `activationTargetValue: 0` (or `activationLagCount: 0`) so the first queued job wakes a worker. Tune `jobsPerReplica` or `lagCount` (average queue workload target per replica); lower values scale up sooner. The store computes `workload` from Redis Streams consumer-group stats, so Valkey/Redis **7+** is required for `store-metrics` as well as `redis-streams`. When autoscaling is enabled, KEDA owns replica counts, the chart omits `spec.replicas`, and `backgroundWorker.replicaCount` is ignored. With `replicas.min: 0`, the gateway ensures the stream consumer group via the responses-api-store gRPC service on startup so workers can claim jobs once scaled up.
 
-Legacy `driver: redis-streams` remains available for migration. It scales from Redis Streams consumer-group lag directly and honors `lagCount` / `activationLagCount` before the newer key names. With bundled Valkey disabled, `redis-streams` does not automatically follow `responses-api-store.redis.url`; track issue #58 or disable the store subchart and set `gateway.responsesApiStore.redisAddress`. When the store subchart is disabled, set `backgroundWorker.autoscaling.metricsUrl` for the `store-metrics` driver.
+Legacy `driver: redis-streams` remains available for migration. It scales from Redis Streams consumer-group lag directly and honors `lagCount` / `activationLagCount` before the newer key names. With bundled Valkey disabled, `redis-streams` does not automatically follow `responses-api-store.redis.url`; track issue #58 or disable the store subchart and set `duihua-gateway.responsesApiStore.redisAddress`. When the store subchart is disabled, set `backgroundWorker.autoscaling.metricsUrl` for the `store-metrics` driver.
 
 ## Cloud-provider independence
 
@@ -158,7 +160,7 @@ Optional cloud integrations (e.g., AWS EBS CSI, load balancers, IAM roles for se
 
 ## Model configuration
 
-- The default gateway model is `google/gemma-4-31B-it` (configurable via `gateway.env.defaultModel`).
+- The default gateway model is `google/gemma-4-31B-it` (configurable via `duihua-gateway.env.defaultModel`).
 - Configure one or more inference runtimes with `inference.models`.
 - When `inference.enabled=true`, the chart creates one vLLM Deployment/Service per model and the gateway routes requests by requested model ID.
 
@@ -189,7 +191,7 @@ inference:
 ```
 
 The chart creates an `InterceptorRoute`, `ScaledObject`, and per-model proxy `Service` for every model and sets Deployment replicas to `autoscaling.replicas.min`.
-Gateway model upstreams are routed through those per-model proxy Services, which resolve to the shared KEDA HTTP interceptor proxy (`inference.autoscaling.interceptorProxyUrl`, typically `http://keda-add-ons-http-interceptor-proxy.keda.svc.cluster.local:8080`), so scale-to-zero models cold-start correctly without rewriting the `/v1/...` request path.
+Gateway model upstreams are routed through those per-model proxy Services via `duihua-gateway.env.modelUpstreams` (see `values-kind.yaml` for an example), which resolve to the shared KEDA HTTP interceptor proxy (`inference.autoscaling.interceptorProxyUrl`, typically `http://keda-add-ons-http-interceptor-proxy.keda.svc.cluster.local:8080`), so scale-to-zero models cold-start correctly without rewriting the `/v1/...` request path.
 
 If you need a model to stay warm, set its minimum replicas to `1` (or higher):
 
@@ -214,7 +216,7 @@ scripts/create-kind-cluster.sh
 # 2) Install/upgrade KEDA and KEDA HTTP add-on
 scripts/install-keda.sh
 
-# 3) Build local gateway and background worker images and load them into kind
+# 3) Build local gateway (from ../duihua-gateway or GHCR) and background worker images; load into kind
 scripts/build-and-load-images.sh
 
 # 4) Deploy Helm chart, restart gateway pods, and verify rollout status
@@ -263,7 +265,7 @@ Useful environment variables:
 
 ## CI
 
-- **Validate** (`.github/workflows/validate.yml`): Runs on PRs and pushes to `main`. Performs Rust formatting/clippy/tests, Hadolint on the gateway and background-worker Dockerfiles, `helm lint`, and `helm template` rendering.
-- **Kind Integration** (`.github/workflows/kind-integration.yml`): On PRs/pushes that touch the chart, kind assets, scripts, gateway, or background worker (manual trigger also available). Creates a kind cluster (`duihua-ci`), runs `scripts/ci-kind-integration.sh` (KEDA, gateway and background-worker image builds, `ghcr.io/beranekio/mock-vllm:latest` upstream, Helm deploy with `values-kind-ci.yaml`, `scripts/smoke-test-kind.sh` including background completion when the worker Deployment is present).
+- **Validate** (`.github/workflows/validate.yml`): Runs on PRs and pushes to `main`. Performs Rust formatting/clippy/tests, Hadolint on the background-worker Dockerfile, `helm dependency build`, `helm lint`, and `helm template` rendering.
+- **Kind Integration** (`.github/workflows/kind-integration.yml`): On PRs/pushes that touch the chart, kind assets, scripts, or background worker (manual trigger also available). Creates a kind cluster (`duihua-ci`), runs `scripts/ci-kind-integration.sh` (KEDA, gateway image from `../duihua-gateway` or GHCR, background-worker image build, `ghcr.io/beranekio/mock-vllm:latest` upstream, Helm deploy with `values-kind-ci.yaml`, `scripts/smoke-test-kind.sh` including background completion when the worker Deployment is present).
 
 CI uses the published [mock-vllm](https://github.com/beranekio/mock-vllm) image (`ghcr.io/beranekio/mock-vllm:latest`) instead of the bundled vLLM inference stack. Local kind workflows still use `values-kind.yaml` with real inference via `scripts/kind-local-up.sh`.

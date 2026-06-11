@@ -318,7 +318,7 @@ test_in_flight_continuation_rejected() {
 }
 
 background_queue_enabled() {
-  local deployment="${RELEASE_NAME}-duihua-ai-services-gateway"
+  local deployment="${RELEASE_NAME}-duihua-gateway"
   local enabled
   enabled="$(kubectl get deployment "${deployment}" -n "${NAMESPACE}" \
     -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="RESPONSES_BACKGROUND_ENABLED")].value}' 2>/dev/null || true)"

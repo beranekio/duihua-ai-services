@@ -25,11 +25,11 @@ responses-api-store:
     service:
       port: 6379
 
-gateway:
+duihua-gateway:
   replicaCount: 1
   image:
-    repository: ghcr.io/example/duihua-gateway
-    tag: "0.1.0"
+    repository: ghcr.io/beranekio/duihua-gateway
+    tag: "latest"
     pullPolicy: IfNotPresent
   service:
     type: ClusterIP
@@ -45,13 +45,21 @@ gateway:
     responseIdStoreTtlSeconds: "86400"
     defaultModel: google/gemma-4-31B-it
     upstreamBaseUrl: http://vllm:8000/v1
+    # Comma-separated model=url entries for per-model inference routing.
+    # When inference.enabled=true, set entries like
+    # "model-a=http://<release>-duihua-ai-services-inference-0-proxy:8080/v1".
+    modelUpstreams: ""
   responsesApiStore:
     # Persist completed Responses API objects via the responses-api-store gRPC
     # service. This does not enable vLLM's in-memory response store, so inference
     # deployments may use multiple replicas and scale to zero.
     enabled: false
-    # Override the gRPC endpoint; when empty, uses the subchart Service.
+    # Override the gRPC endpoint; when empty at deploy time, set explicitly or
+    # use scripts/deploy-kind.sh which wires the subchart Service automatically.
     endpoint: ""
+    backgroundJobs:
+      enabled: true
+      consumerGroup: duihua-background
     # Override the store metrics URL for KEDA when responsesApiStoreService.enabled=false.
     metricsUrl: ""
 

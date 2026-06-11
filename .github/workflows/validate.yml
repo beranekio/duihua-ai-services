@@ -55,11 +55,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
-      - name: Lint gateway Dockerfile
-        uses: hadolint/hadolint-action@v3.3.0
-        with:
-          dockerfile: services/gateway/Dockerfile
-
       - name: Lint background worker Dockerfile
         uses: hadolint/hadolint-action@v3.3.0
         with:

@@ -9,7 +9,7 @@ RELEASE_NAME="${RELEASE_NAME:-duihua}"
 NAMESPACE="${NAMESPACE:-duihua}"
 TIMEOUT="${TIMEOUT:-300s}"
 GATEWAY_DEPLOYMENT_REQUIRED="${GATEWAY_DEPLOYMENT_REQUIRED:-false}"
-GATEWAY_DEPLOYMENT="${RELEASE_NAME}-duihua-ai-services-gateway"
+GATEWAY_DEPLOYMENT="${GATEWAY_DEPLOYMENT:-${RELEASE_NAME}-duihua-gateway}"
 
 if ! type -P kubectl >/dev/null 2>&1; then
   if [[ "${GATEWAY_DEPLOYMENT_REQUIRED}" == "true" ]]; then

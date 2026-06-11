@@ -41,7 +41,7 @@ run_step "Verifying mock-vllm is reachable in-cluster"
 run_step "Deploying Helm chart (CI values overlay, inference disabled)"
 "${ROOT_DIR}/scripts/deploy-kind.sh"
 
-gateway_deployment="${RELEASE_NAME}-duihua-ai-services-gateway"
+gateway_deployment="${RELEASE_NAME}-duihua-gateway"
 echo "Gateway upstream configuration:"
 kubectl get deployment "${gateway_deployment}" -n "${NAMESPACE}" \
   -o jsonpath='{range .spec.template.spec.containers[0].env[*]}{.name}={.value}{"\n"}{end}' \

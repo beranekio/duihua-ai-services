@@ -11,7 +11,6 @@ on:
       - services/Cargo.toml
       - services/Cargo.lock
       - services/background-worker/**
-      - services/gateway/**
   push:
     branches:
       - main
@@ -23,7 +22,6 @@ on:
       - services/Cargo.toml
       - services/Cargo.lock
       - services/background-worker/**
-      - services/gateway/**
   workflow_dispatch:
 
 concurrency:

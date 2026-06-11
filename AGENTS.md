@@ -5,9 +5,8 @@ Guidance for human and AI contributors working in this repository.
 ## Project overview
 - This repo provides a Kubernetes-first, OpenAI API-compatible serving stack.
 - Main components:
-  - `services/gateway` (Rust/Axum API gateway)
+  - [beranekio/duihua-gateway](https://github.com/beranekio/duihua-gateway) (Rust/Axum API gateway, consumed as Helm subchart)
   - `services/background-worker` (Valkey stream consumer for background Responses API requests)
-  - `services/common` (shared Rust library for gateway and background worker)
   - `charts/duihua-ai-services` (Helm chart)
   - `scripts/` (local kind + deployment helpers)
   - `docs/` (operations notes)
@@ -17,15 +16,17 @@ Guidance for human and AI contributors working in this repository.
 2. Keep changes focused and minimal to the requested task.
 3. Prefer updating docs/charts/scripts together when behavior changes.
 4. Run targeted checks for the area you modified (see [Validation commands](#validation-commands)).
-5. Before pushing commits that touch the gateway or Helm chart, run the [kind integration smoke test](#pre-push-kind-integration-test) when your environment supports it.
+5. Before pushing commits that touch the gateway subchart wiring or Helm chart, run the [kind integration smoke test](#pre-push-kind-integration-test) when your environment supports it.
 
 ## Pre-push kind integration test
 
 **Required before push** when a commit changes either:
-- `services/gateway/` (gateway source, Dockerfile, or gateway-facing behavior),
+- `charts/duihua-ai-services/` (chart templates, values, subchart pins, or chart defaults),
 - `services/background-worker/` (worker source, Dockerfile, or queue consumer behavior),
-- `charts/duihua-ai-services/` (chart templates, values, or chart defaults), or
-- `scripts/` when deploy or smoke-test behavior changes.
+- `scripts/` when deploy or smoke-test behavior changes, or
+- Gateway integration in this repo (values/scripts referencing `duihua-gateway`).
+
+Gateway source changes belong in [beranekio/duihua-gateway](https://github.com/beranekio/duihua-gateway); bump the OCI subchart pin in `Chart.yaml` when adopting a new published chart.
 
 Run the end-to-end kind smoke test so chart, gateway, and background-worker changes are validated against a real cluster, not only static checks.
 
@@ -51,7 +52,7 @@ scripts/deploy-kind.sh             # after chart or values changes (restarts Dep
 scripts/smoke-test-kind.sh
 ```
 
-`scripts/build-and-load-images.sh` and `scripts/deploy-kind.sh` restart the gateway and background-worker Deployments by default so pods load rebuilt `:local` images even when the Helm pod template is unchanged. Set `GATEWAY_ROLLOUT_RESTART=false` or `BACKGROUND_WORKER_ROLLOUT_RESTART=false` to skip individual restarts, or use unique image tags instead of `:local`.
+`scripts/build-and-load-images.sh` builds the gateway from `../duihua-gateway` when present, otherwise pulls `ghcr.io/beranekio/duihua-gateway:latest`. It and `scripts/deploy-kind.sh` restart the gateway and background-worker Deployments by default so pods load rebuilt `:local` images even when the Helm pod template is unchanged. Set `GATEWAY_ROLLOUT_RESTART=false` or `BACKGROUND_WORKER_ROLLOUT_RESTART=false` to skip individual restarts, or use unique image tags instead of `:local`.
 
 `scripts/smoke-test-kind.sh` exercises sync and background Responses API flows (including completion polling when the worker Deployment is present), cancel/delete behavior, in-flight continuation rejection, and background-worker Deployment resource requests. See `README.md` (Local kind workflow scripts) for tunables such as `GATEWAY_BASE_URL`, `DEFAULT_MODEL`, `RELEASE_NAME`, and `NAMESPACE`.
 
@@ -61,11 +62,9 @@ If Docker, kind, cluster access, or sufficient resources are unavailable, still 
 
 ## Validation commands
 
-Run checks that match the files you changed. Gateway, background-worker, and chart edits need both unit/static checks **and** the kind smoke test above when possible.
+Run checks that match the files you changed. Background-worker and chart edits need both unit/static checks **and** the kind smoke test above when possible.
 
 ### Rust workspace (run from `services/`)
-
-The gateway and background worker share a Cargo workspace under `services/`.
 
 ```bash
 cd services
@@ -74,16 +73,17 @@ cargo clippy --all-targets --all-features -- -D warnings
 cargo test
 ```
 
-Individual crates may be targeted with `-p duihua-gateway`, `-p duihua-background-worker`, or `-p duihua-common`.
+Target the background worker with `-p duihua-background-worker`.
 
 ### Helm chart (`charts/duihua-ai-services`)
+- `helm dependency update charts/duihua-ai-services`
 - `helm lint charts/duihua-ai-services`
-- `helm template duihua charts/duihua-ai-services >/tmp/duihua-rendered.yaml`
+- `helm template duihua charts/duihua-ai-services -f charts/duihua-ai-services/values-kind.yaml >/tmp/duihua-rendered.yaml`
 
 ### Scripts
 - `bash -n scripts/*.sh` when editing shell helpers
 
-### Kind integration (gateway, background-worker, or chart changes; see [Pre-push kind integration test](#pre-push-kind-integration-test))
+### Kind integration (chart or deploy script changes; see [Pre-push kind integration test](#pre-push-kind-integration-test))
 - `scripts/kind-local-up.sh` for first-time bootstrap only
 - On an existing cluster: `scripts/build-and-load-images.sh` and/or `scripts/deploy-kind.sh` (see [incremental refresh](#when-the-environment-supports-kind))
 - `scripts/smoke-test-kind.sh`
@@ -95,12 +95,13 @@ For unrelated edits (docs-only, scripts that do not affect deploy behavior, etc.
 - Avoid unrelated refactors in the same commit.
 - Document user-visible changes in `README.md` and/or `docs/operations.md`.
 - Keep Kubernetes defaults cloud-provider-neutral unless explicitly required.
+- Parent chart values for the gateway use the `duihua-gateway:` key (not `gateway:`).
 
 ## Agent-specific notes
 
 ### Opening pull requests
 
-When creating a PR, **always add a GitHub label that identifies the agent** (or tooling) that authored it. Use the repo’s existing label if one matches; otherwise create it first or ask a maintainer to add it.
+When creating a PR, **always add a GitHub label that identifies the agent** (or tooling) that authored it. Use the repo's existing label if one matches; otherwise create it first or ask a maintainer to add it.
 
 | Agent / tool | Label |
 | --- | --- |
@@ -122,7 +123,7 @@ gh pr edit --add-label grok
 Include in the PR description:
 - What changed
 - Why it changed
-- How it was validated (exact commands), including `scripts/smoke-test-kind.sh` when gateway or chart files changed
+- How it was validated (exact commands), including `scripts/smoke-test-kind.sh` when gateway subchart wiring or chart files changed
 
 If a command cannot be run in the current environment, state that clearly (especially the kind smoke test).
 

@@ -30,7 +30,7 @@ spec:
             - name: RESPONSES_API_STORE_ENDPOINT
               value: {{ include "duihua.responsesApiStoreEndpoint" . | quote }}
             - name: RESPONSE_ID_STORE_TTL_SECONDS
-              value: {{ dig "duihua-gateway" "env" "responseIdStoreTtlSeconds" "86400" .Values | quote }}
+              value: {{ dig "env" "responseIdStoreTtlSeconds" "86400" (index .Values "duihua-gateway" | default dict) | quote }}
             - name: BACKGROUND_QUEUE_CONSUMER_GROUP
               value: {{ .Values.backgroundWorker.consumerGroup | quote }}
             - name: BACKGROUND_QUEUE_CONSUMER_NAME

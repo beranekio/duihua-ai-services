@@ -47,12 +47,12 @@ Do not re-run `scripts/kind-local-up.sh` to pick up gateway or chart edits on an
 **Incremental refresh** (cluster already running; required after gateway or chart edits):
 
 ```bash
-scripts/build-and-load-images.sh   # after gateway or worker image changes (restarts Deployments if deployed)
+scripts/build-and-load-images.sh   # after background-worker image changes (restarts Deployment if deployed)
 scripts/deploy-kind.sh             # after chart or values changes (restarts Deployments after Helm upgrade)
 scripts/smoke-test-kind.sh
 ```
 
-`scripts/build-and-load-images.sh` builds the gateway from `../duihua-gateway` when present, otherwise pulls `ghcr.io/beranekio/duihua-gateway:latest`. It and `scripts/deploy-kind.sh` restart the gateway and background-worker Deployments by default so pods load rebuilt `:local` images even when the Helm pod template is unchanged. Set `GATEWAY_ROLLOUT_RESTART=false` or `BACKGROUND_WORKER_ROLLOUT_RESTART=false` to skip individual restarts, or use unique image tags instead of `:local`.
+`scripts/build-and-load-images.sh` builds and loads only the background-worker image. The gateway image is provided by the pinned `duihua-gateway` OCI subchart. `scripts/deploy-kind.sh` restarts the gateway and background-worker Deployments by default after chart upgrades so config changes take effect. Set `GATEWAY_ROLLOUT_RESTART=false` or `BACKGROUND_WORKER_ROLLOUT_RESTART=false` to skip individual restarts, or use unique worker image tags instead of `:local`.
 
 `scripts/smoke-test-kind.sh` exercises sync and background Responses API flows (including completion polling when the worker Deployment is present), cancel/delete behavior, in-flight continuation rejection, and background-worker Deployment resource requests. See `README.md` (Local kind workflow scripts) for tunables such as `GATEWAY_BASE_URL`, `DEFAULT_MODEL`, `RELEASE_NAME`, and `NAMESPACE`.
 

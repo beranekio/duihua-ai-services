@@ -77,7 +77,7 @@ Local kind (`values-kind.yaml`) enables autoscaling with `min: 1`, `max: 2`, and
 
 #### Local kind and CI scripts
 
-- `scripts/build-and-load-images.sh` builds or pulls the gateway image (from `../duihua-gateway` or GHCR), builds the background-worker image, loads both into kind, then restarts both Deployments when deployed.
+- `scripts/build-and-load-images.sh` builds the background-worker image, loads it into kind, and restarts the worker Deployment when deployed. The gateway image comes from the pinned `duihua-gateway` subchart.
 - `scripts/deploy-kind.sh` upgrades the Helm release and restarts gateway and background-worker Deployments so `:local` image tags are picked up. Kind values enable `serviceAccount.create` so gateway and worker pods use a chart-managed ServiceAccount consistently across upgrades.
 - `scripts/restart-background-worker-deployment.sh` restarts only the worker Deployment (optional `BACKGROUND_WORKER_DEPLOYMENT_REQUIRED=true` for hard failure when missing).
 - `scripts/smoke-test-kind.sh` waits for the gateway health endpoint and, when background queueing is enabled, for the background-worker Deployment to become ready before exercising completion, cancel, delete, resource checks, and optional KEDA scale-up when `backgroundWorker.autoscaling.enabled=true`.

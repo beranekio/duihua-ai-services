@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# End-to-end kind CI path: KEDA, gateway image, mock-vllm GHCR image, Helm deploy, smoke tests.
+# End-to-end kind CI path: KEDA, background worker image, mock-vllm, Helm deploy, smoke tests.
 # Used by .github/workflows/kind-integration.yml. Requires an existing kind cluster.
 set -euo pipefail
 
@@ -10,7 +10,6 @@ export KUBECTL_CONTEXT="${KUBECTL_CONTEXT:-kind-${CLUSTER_NAME}}"
 export RELEASE_NAME="${RELEASE_NAME:-duihua}"
 export NAMESPACE="${NAMESPACE:-duihua}"
 
-export GATEWAY_IMAGE_TAG="${GATEWAY_IMAGE_TAG:-local}"
 export MOCK_VLLM_IMAGE="${MOCK_VLLM_IMAGE:-ghcr.io/beranekio/mock-vllm:latest}"
 
 export VALUES_FILE="${VALUES_FILE:-${ROOT_DIR}/charts/duihua-ai-services/values-kind.yaml}"
@@ -26,7 +25,7 @@ run_step() {
 run_step "Installing KEDA"
 "${ROOT_DIR}/scripts/install-keda.sh"
 
-run_step "Building and loading gateway and background worker images"
+run_step "Building and loading background worker image"
 "${ROOT_DIR}/scripts/build-and-load-images.sh"
 
 run_step "Deploying mock-vllm upstream (before gateway)"

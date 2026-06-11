@@ -12,10 +12,6 @@ responses-api-store:
     staleSeconds: 3600
 
 duihua-gateway:
-  image:
-    repository: duihua-gateway
-    tag: kind
-    pullPolicy: IfNotPresent
   service:
     type: NodePort
     port: 80

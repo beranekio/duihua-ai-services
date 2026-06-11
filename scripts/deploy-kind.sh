@@ -30,6 +30,14 @@ helm_set_args=(
   --set "inference.enabled=${INFERENCE_ENABLED}"
 )
 
+MODEL_UPSTREAMS_VALUES_FILE=""
+cleanup_model_upstreams_values() {
+  if [[ -n "${MODEL_UPSTREAMS_VALUES_FILE}" && -f "${MODEL_UPSTREAMS_VALUES_FILE}" ]]; then
+    rm -f "${MODEL_UPSTREAMS_VALUES_FILE}"
+  fi
+}
+trap cleanup_model_upstreams_values EXIT
+
 kubectl() {
   if [[ -n "${KUBECTL_CONTEXT}" ]]; then
     command kubectl --context "${KUBECTL_CONTEXT}" "$@"
@@ -84,7 +92,20 @@ PY
     echo "Failed to compute duihua-gateway.env.modelUpstreams for inference.enabled=true" >&2
     exit 1
   fi
-  helm_set_args+=(--set "duihua-gateway.env.modelUpstreams=${MODEL_UPSTREAMS}")
+  MODEL_UPSTREAMS_VALUES_FILE="$(mktemp)"
+  python3 - "${MODEL_UPSTREAMS_VALUES_FILE}" "${MODEL_UPSTREAMS}" <<'PY'
+import sys
+
+import yaml
+
+with open(sys.argv[1], "w", encoding="utf-8") as handle:
+    yaml.safe_dump(
+        {"duihua-gateway": {"env": {"modelUpstreams": sys.argv[2]}}},
+        handle,
+        default_flow_style=False,
+    )
+PY
+  helm_values_args+=(-f "${MODEL_UPSTREAMS_VALUES_FILE}")
 fi
 
 echo "Deploying Helm release '${RELEASE_NAME}' into namespace '${NAMESPACE}'..."

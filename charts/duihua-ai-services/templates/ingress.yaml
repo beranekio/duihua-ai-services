@@ -21,7 +21,7 @@ spec:
               service:
                 name: {{ include "duihua.gateway.fullname" $ }}
                 port:
-                  number: {{ dig "service" "port" 80 (index $.Values "duihua-gateway" | default dict) }}
+                  number: {{ include "duihua.gateway.servicePort" $ }}
           {{- end }}
     {{- end }}
 {{- end }}

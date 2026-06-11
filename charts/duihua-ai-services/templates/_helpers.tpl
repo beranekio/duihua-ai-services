@@ -24,6 +24,22 @@
 {{- end -}}
 {{- end -}}
 
+{{- define "duihua.gateway.servicePort" -}}
+{{- $gateway := index .Values "duihua-gateway" | default dict -}}
+{{- $service := $gateway.service | default dict -}}
+{{- if $service.port -}}
+{{- $service.port | int -}}
+{{- else -}}
+{{- $http := $gateway.http | default dict -}}
+{{- if $http.listenAddr -}}
+{{- $parts := splitList ":" $http.listenAddr -}}
+{{- last $parts | int -}}
+{{- else -}}
+{{- $http.port | default 8080 | int -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
 {{- define "duihua.gateway.modelUpstreams" -}}
 {{- if not .Values.inference.enabled -}}
 {{- else -}}

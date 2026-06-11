@@ -29,9 +29,6 @@ run_step "Installing KEDA"
 run_step "Building and loading gateway and background worker images"
 "${ROOT_DIR}/scripts/build-and-load-images.sh"
 
-run_step "Pulling and loading mock-vllm image"
-"${ROOT_DIR}/scripts/build-and-load-mock-vllm.sh"
-
 run_step "Deploying mock-vllm upstream (before gateway)"
 "${ROOT_DIR}/scripts/deploy-mock-vllm-kind.sh"
 

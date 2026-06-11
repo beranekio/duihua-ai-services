@@ -5,6 +5,7 @@
 render_deploy_kind_probe_read() {
   helm template "${RELEASE_NAME}" "${CHART_PATH}" \
     "${helm_values_args[@]}" \
+    --set "configValidation.enabled=false" \
     --set "deployKindProbe.enabled=true" \
     --set "inference.enabled=${INFERENCE_ENABLED}" \
     --set "duihua-gateway.responsesApiStore.enabled=false" \
@@ -19,6 +20,7 @@ render_deploy_kind_probe() {
   helm template "${RELEASE_NAME}" "${CHART_PATH}" \
     "${helm_values_args[@]}" \
     "${set_args[@]}" \
+    --set "configValidation.enabled=false" \
     --set "deployKindProbe.enabled=true" \
     --set "inference.enabled=${INFERENCE_ENABLED}" \
     --show-only templates/deploy-kind-probe.yaml

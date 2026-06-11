@@ -1,3 +1,10 @@
+x-consumerGroup: &consumer-group duihua-background
+
+configValidation:
+  # Enable strict chart validation (inference routing, store endpoint, consumer groups).
+  # Turn on in environment overlays such as values-kind.yaml.
+  enabled: false
+
 responsesApiStoreService:
   # Deploy the beranekio/responses-api-store gRPC service subchart from GHCR
   # (oci://ghcr.io/beranekio/charts). Gateway and background worker talk to
@@ -56,7 +63,7 @@ duihua-gateway:
     endpoint: ""
     backgroundJobs:
       enabled: true
-      consumerGroup: duihua-background
+      consumerGroup: *consumer-group
     # Override the store metrics URL for KEDA when responsesApiStoreService.enabled=false.
     metricsUrl: ""
 
@@ -69,7 +76,7 @@ backgroundWorker:
     repository: ghcr.io/example/duihua-background-worker
     tag: "0.1.0"
     pullPolicy: IfNotPresent
-  consumerGroup: duihua-background
+  consumerGroup: *consumer-group
   # Keep below the responses-api-store Valkey client response timeout (500ms).
   blockMs: 400
   pendingRetrySeconds: 30

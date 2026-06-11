@@ -1,3 +1,6 @@
+configValidation:
+  enabled: true
+
 responsesApiStoreService:
   enabled: true
 
@@ -12,6 +15,9 @@ responses-api-store:
     staleSeconds: 3600
 
 duihua-gateway:
+  serviceAccount:
+    create: false
+    name: duihua-duihua-ai-services
   service:
     type: NodePort
     port: 80

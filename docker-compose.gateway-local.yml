@@ -1,6 +1,16 @@
 # Redirect to the standalone gateway stack in beranekio/duihua-gateway.
 # Clone that repo alongside this one (../duihua-gateway) or set GATEWAY_COMPOSE_DIR.
 #
+# Gateway only (no upstream inference or store):
 #   docker compose -f docker-compose.gateway-local.yml up --build
+#
+# With mockable upstream inference (vLLM CPU image):
+#   docker compose -f docker-compose.gateway-local.yml --profile inference up --build
+#
+# With Responses API store + Valkey (gateway talks to store on :50051):
+#   docker compose -f docker-compose.gateway-local.yml --profile store up --build
+#
+# Full local stack (inference + store):
+#   docker compose -f docker-compose.gateway-local.yml --profile inference --profile store up --build
 include:
   - path: ${GATEWAY_COMPOSE_DIR:-../duihua-gateway}/docker-compose.yml

@@ -77,4 +77,11 @@ jobs:
         run: helm lint charts/duihua-ai-services
 
       - name: Render templates
-        run: helm template duihua-ai-services charts/duihua-ai-services --debug > /tmp/helm-rendered.yaml
+        run: |
+          helm template duihua charts/duihua-ai-services \
+            -f charts/duihua-ai-services/values-kind.yaml \
+            --debug > /tmp/helm-rendered.yaml
+          helm template duihua charts/duihua-ai-services \
+            -f charts/duihua-ai-services/values-kind.yaml \
+            --set ingress.enabled=true \
+            --debug > /tmp/helm-rendered-ingress.yaml

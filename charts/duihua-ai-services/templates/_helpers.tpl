@@ -11,11 +11,16 @@
 {{- end -}}
 
 {{- define "duihua.gateway.fullname" -}}
-{{- $chartName := "duihua-gateway" -}}
-{{- if contains .Release.Name $chartName -}}
+{{- $gateway := index .Values "duihua-gateway" | default dict -}}
+{{- if $gateway.fullnameOverride -}}
+{{- $gateway.fullnameOverride | trunc 63 | trimSuffix "-" -}}
+{{- else -}}
+{{- $name := default "duihua-gateway" $gateway.nameOverride -}}
+{{- if contains $name .Release.Name -}}
 {{- .Release.Name | trunc 63 | trimSuffix "-" -}}
 {{- else -}}
-{{- printf "%s-%s" .Release.Name $chartName | trunc 63 | trimSuffix "-" -}}
+{{- printf "%s-%s" .Release.Name $name | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
 {{- end -}}
 {{- end -}}
 
@@ -260,11 +265,28 @@ true
 {{- end -}}
 
 {{- define "duihua.validate.config" -}}
-{{- if eq (include "duihua.responsesApiStore.enabled" .) "true" -}}
 {{- $gateway := index .Values "duihua-gateway" | default dict -}}
 {{- $gatewayStore := $gateway.responsesApiStore | default dict -}}
-{{- if and (eq (include "duihua.responsesApiStoreService.enabled" .) "false") (not $gatewayStore.endpoint) -}}
+{{- $gatewayEnv := $gateway.env | default dict -}}
+{{- if .Values.inference.enabled -}}
+{{- if not $gatewayEnv.modelUpstreams -}}
+{{- fail (printf "inference.enabled=true requires duihua-gateway.env.modelUpstreams (e.g. %s)" (include "duihua.gateway.modelUpstreams" .)) -}}
+{{- end -}}
+{{- end -}}
+{{- if eq (include "duihua.responsesApiStore.enabled" .) "true" -}}
+{{- if not $gatewayStore.endpoint -}}
+{{- if eq (include "duihua.responsesApiStoreService.enabled" .) "true" -}}
+{{- fail (printf "duihua-gateway.responsesApiStore.enabled=true requires duihua-gateway.responsesApiStore.endpoint (e.g. %s)" (include "duihua.responsesApiStoreEndpoint" .)) -}}
+{{- else -}}
 {{- fail "duihua-gateway.responsesApiStore.enabled=true requires responsesApiStoreService.enabled=true or duihua-gateway.responsesApiStore.endpoint" -}}
+{{- end -}}
+{{- end -}}
+{{- $backgroundJobs := dig "responsesApiStore" "backgroundJobs" dict $gateway -}}
+{{- if and (hasKey $backgroundJobs "consumerGroup") (ne (get $backgroundJobs "consumerGroup") .Values.backgroundWorker.consumerGroup) -}}
+{{- fail (printf "duihua-gateway.responsesApiStore.backgroundJobs.consumerGroup (%v) must match backgroundWorker.consumerGroup (%v)" (get $backgroundJobs "consumerGroup") .Values.backgroundWorker.consumerGroup) -}}
+{{- end -}}
+{{- if and (not .Values.backgroundWorker.enabled) (dig "responsesApiStore" "backgroundJobs" "enabled" true $gateway) -}}
+{{- fail "backgroundWorker.enabled=false requires duihua-gateway.responsesApiStore.backgroundJobs.enabled=false" -}}
 {{- end -}}
 {{- if eq (include "duihua.responsesApiStoreService.enabled" .) "true" -}}
 {{- $store := get .Values "responses-api-store" | default dict -}}

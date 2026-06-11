@@ -10,21 +10,22 @@ TIMEOUT="${TIMEOUT:-300s}"
 GATEWAY_IMAGE_REPO="${GATEWAY_IMAGE_REPO:-duihua-gateway}"
 GATEWAY_IMAGE_TAG="${GATEWAY_IMAGE_TAG:-local}"
 GATEWAY_IMAGE="${GATEWAY_IMAGE_REPO}:${GATEWAY_IMAGE_TAG}"
-GATEWAY_ROOT="${GATEWAY_ROOT:-${ROOT_DIR}/../duihua-gateway}"
 GATEWAY_SOURCE_IMAGE="${GATEWAY_SOURCE_IMAGE:-ghcr.io/beranekio/duihua-gateway:latest}"
 
 BACKGROUND_WORKER_IMAGE_REPO="${BACKGROUND_WORKER_IMAGE_REPO:-duihua-background-worker}"
 BACKGROUND_WORKER_IMAGE_TAG="${BACKGROUND_WORKER_IMAGE_TAG:-${GATEWAY_IMAGE_TAG}}"
 BACKGROUND_WORKER_IMAGE="${BACKGROUND_WORKER_IMAGE_REPO}:${BACKGROUND_WORKER_IMAGE_TAG}"
 
-if [[ -f "${GATEWAY_ROOT}/Dockerfile" ]]; then
-  echo "Building gateway image '${GATEWAY_IMAGE}' from ${GATEWAY_ROOT}..."
-  docker build -t "${GATEWAY_IMAGE}" --file "${GATEWAY_ROOT}/Dockerfile" "${GATEWAY_ROOT}"
-else
-  echo "duihua-gateway source not found at ${GATEWAY_ROOT}; pulling ${GATEWAY_SOURCE_IMAGE}..."
-  docker pull "${GATEWAY_SOURCE_IMAGE}"
-  docker tag "${GATEWAY_SOURCE_IMAGE}" "${GATEWAY_IMAGE}"
+echo "Pulling gateway image '${GATEWAY_SOURCE_IMAGE}'..."
+if ! docker pull "${GATEWAY_SOURCE_IMAGE}"; then
+  if docker image inspect "${GATEWAY_SOURCE_IMAGE}" >/dev/null 2>&1; then
+    echo "Warning: Failed to pull '${GATEWAY_SOURCE_IMAGE}', using existing local image."
+  else
+    echo "Error: Failed to pull '${GATEWAY_SOURCE_IMAGE}' and no local image found." >&2
+    exit 1
+  fi
 fi
+docker tag "${GATEWAY_SOURCE_IMAGE}" "${GATEWAY_IMAGE}"
 
 echo "Building background worker image '${BACKGROUND_WORKER_IMAGE}'..."
 docker build -t "${BACKGROUND_WORKER_IMAGE}" --file services/background-worker/Dockerfile services

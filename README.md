@@ -55,8 +55,11 @@ helm upgrade --install duihua charts/duihua-ai-services \
   --namespace duihua \
   --create-namespace \
   --set backgroundWorker.image.repository=ghcr.io/<org>/duihua-background-worker \
-  --set backgroundWorker.image.tag=0.1.0
+  --set backgroundWorker.image.tag=0.1.0 \
+  --set duihua-gateway.env.modelUpstreams="google/gemma-4-31B-it=http://duihua-duihua-ai-services-inference-0-proxy:8080/v1"
 ```
+
+When `inference.enabled=true` (the chart default), `duihua-gateway.env.modelUpstreams` must list each bundled model and its per-model inference proxy Service (`<release>-duihua-ai-services-inference-<index>-proxy`). Helm fails at render time if it is missing. For kind/local workflows, `scripts/deploy-kind.sh` computes and injects this mapping automatically.
 
 ### 3) Call the API
 

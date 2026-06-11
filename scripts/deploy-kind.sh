@@ -33,25 +33,8 @@ cleanup_gateway_env_values() {
 }
 trap cleanup_gateway_env_values EXIT
 
-probe_data() {
-  local key="$1"
-  render_deploy_kind_probe | awk -v key="${key}" '
-    $0 ~ "^  " key ": " {
-      sub("^  " key ": ", "")
-      gsub(/^"/, "")
-      gsub(/"$/, "")
-      print
-      exit
-    }'
-}
-
-render_deploy_kind_probe() {
-  helm template "${RELEASE_NAME}" "${CHART_PATH}" \
-    "${helm_values_args[@]}" \
-    --set "deployKindProbe.enabled=true" \
-    --set "inference.enabled=${INFERENCE_ENABLED}" \
-    --show-only templates/deploy-kind-probe.yaml
-}
+# shellcheck source=scripts/_deploy-kind-probe.sh
+source "${ROOT_DIR}/scripts/_deploy-kind-probe.sh"
 
 yaml_double_quote() {
   local value="$1"
@@ -82,6 +65,17 @@ kubectl() {
 
 "${ROOT_DIR}/scripts/update-helm-dependencies.sh"
 
+if [[ -v GATEWAY_STORE_ENDPOINT ]]; then
+  helm_set_args+=(--set "duihua-gateway.responsesApiStore.endpoint=${GATEWAY_STORE_ENDPOINT}")
+else
+  configured_store_endpoint="$(probe_data_read configuredStoreEndpoint)"
+  if [[ -z "${configured_store_endpoint}" && "$(probe_data_read responsesApiStoreServiceEnabled)" == "true" ]]; then
+    helm_set_args+=(
+      --set "duihua-gateway.responsesApiStore.endpoint=http://${RELEASE_NAME}-responses-api-store:50051"
+    )
+  fi
+fi
+
 PARENT_FULLNAME="$(probe_data duihuaFullname)"
 GATEWAY_FULLNAME="$(probe_data gatewayFullname)"
 if [[ -z "${PARENT_FULLNAME}" || -z "${GATEWAY_FULLNAME}" ]]; then
@@ -94,17 +88,6 @@ if [[ "$(probe_data parentServiceAccountCreate)" == "true" ]]; then
     --set "duihua-gateway.serviceAccount.create=false"
     --set "duihua-gateway.serviceAccount.name=$(probe_data serviceAccountName)"
   )
-fi
-
-if [[ -v GATEWAY_STORE_ENDPOINT ]]; then
-  helm_set_args+=(--set "duihua-gateway.responsesApiStore.endpoint=${GATEWAY_STORE_ENDPOINT}")
-else
-  configured_store_endpoint="$(probe_data configuredStoreEndpoint)"
-  if [[ -z "${configured_store_endpoint}" && "$(probe_data responsesApiStoreServiceEnabled)" == "true" ]]; then
-    helm_set_args+=(
-      --set "duihua-gateway.responsesApiStore.endpoint=http://${RELEASE_NAME}-responses-api-store:50051"
-    )
-  fi
 fi
 
 GATEWAY_ENV_VALUES_FILE="$(mktemp)"

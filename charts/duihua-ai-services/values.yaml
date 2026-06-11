@@ -1,9 +1,8 @@
 x-consumerGroup: &consumer-group duihua-background
 
 configValidation:
-  # Enable strict chart validation (inference routing, store endpoint, consumer groups).
-  # Turn on in environment overlays such as values-kind.yaml.
-  enabled: false
+  # Fail Helm renders when inference routing, store endpoint, or background settings are inconsistent.
+  enabled: true
 
 deployKindProbe:
   # Render deploy-kind-probe.yaml for scripts/deploy-kind.sh only.

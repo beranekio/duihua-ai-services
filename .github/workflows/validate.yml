@@ -55,11 +55,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
-      - name: Lint gateway Dockerfile
-        uses: hadolint/hadolint-action@v3.3.0
-        with:
-          dockerfile: services/gateway/Dockerfile
-
       - name: Lint background worker Dockerfile
         uses: hadolint/hadolint-action@v3.3.0
         with:
@@ -79,7 +74,26 @@ jobs:
         run: helm dependency build charts/duihua-ai-services
 
       - name: Lint chart
-        run: helm lint charts/duihua-ai-services
+        run: helm lint charts/duihua-ai-services -f charts/duihua-ai-services/values-kind.yaml
+
+      - name: Verify default values fail validation
+        run: |
+          if helm template duihua charts/duihua-ai-services >/tmp/helm-default.yaml 2>/tmp/helm-default.err; then
+            echo "Expected default values to fail configValidation" >&2
+            exit 1
+          fi
+          grep -q "modelUpstreams" /tmp/helm-default.err
 
       - name: Render templates
-        run: helm template duihua-ai-services charts/duihua-ai-services --debug > /tmp/helm-rendered.yaml
+        run: |
+          helm template duihua charts/duihua-ai-services \
+            -f charts/duihua-ai-services/values-kind.yaml \
+            --set duihua-gateway.responsesApiStore.endpoint=http://duihua-responses-api-store:50051 \
+            --set duihua-gateway.env.modelUpstreams="HuggingFaceTB/SmolLM2-135M-Instruct=http://duihua-duihua-ai-services-inference-0-proxy:8080/v1" \
+            --debug > /tmp/helm-rendered.yaml
+          helm template duihua charts/duihua-ai-services \
+            -f charts/duihua-ai-services/values-kind.yaml \
+            --set duihua-gateway.responsesApiStore.endpoint=http://duihua-responses-api-store:50051 \
+            --set duihua-gateway.env.modelUpstreams="HuggingFaceTB/SmolLM2-135M-Instruct=http://duihua-duihua-ai-services-inference-0-proxy:8080/v1" \
+            --set ingress.enabled=true \
+            --debug > /tmp/helm-rendered-ingress.yaml

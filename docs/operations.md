@@ -49,15 +49,15 @@ If running on AWS EKS:
 
 The gateway can store completed Responses API objects and materialized conversation input in a Valkey/Redis-compatible store. This lets the gateway serve retrieval, deletion, and input-item requests without waking an inference deployment. For `POST /v1/responses` requests with `previous_response_id`, the gateway loads the saved conversation, appends the previous output and new input, removes `previous_response_id`, and sends a stateless request to the selected upstream model.
 
-Enable the gateway-owned store with `gateway.responsesApiStore.enabled=true`. This setting does **not** set `VLLM_ENABLE_RESPONSES_API_STORE`: the implementation intentionally avoids vLLM's in-memory response store. Inference deployments may retain the default `autoscaling.replicas.min=0`, scale to zero while idle, and use more than one replica when configured.
+Enable the gateway-owned store with `duihua-gateway.responsesApiStore.enabled=true`. This setting does **not** set `VLLM_ENABLE_RESPONSES_API_STORE`: the implementation intentionally avoids vLLM's in-memory response store. Inference deployments may retain the default `autoscaling.replicas.min=0`, scale to zero while idle, and use more than one replica when configured.
 
-The chart-managed Valkey deployment is suitable for development. For production, use an externally managed, highly available Valkey/Redis-compatible service by keeping `valkey.enabled=false` and pointing `gateway.env.responseIdStoreUrl` at that service. Tune `gateway.env.responseIdStoreTtlSeconds` to match how long clients may use stored Responses API ids.
+The chart-managed Valkey deployment is suitable for development. For production, use an externally managed, highly available Valkey/Redis-compatible service via the `responses-api-store` subchart (`valkey.enabled=false`, external `redis.url`). Tune `duihua-gateway.env.responseIdStoreTtlSeconds` to match how long clients may use stored Responses API ids.
 
 Creation requests that explicitly set `store: false` are not persisted by the gateway. Streaming responses are saved once the gateway observes their `response.completed` event.
 
 ### Background Responses API requests
 
-When `gateway.responsesApiStore.enabled=true` and `backgroundWorker.enabled=true` (default), `POST /v1/responses` with `background=true` returns immediately with a `queued` response stored in Valkey and enqueues the `response_id` on a Valkey stream. A `duihua-background-worker` Deployment consumes the stream, issues a synchronous upstream `/responses` call with `background=false` and `store=false`, and updates Valkey when processing completes. Clients poll `GET /v1/responses/{id}` until the status leaves `queued` or `in_progress`. `POST /v1/responses/{id}/cancel` marks the stored response `cancelled` in Valkey (workers must respect terminal statuses).
+When `duihua-gateway.responsesApiStore.enabled=true` and `backgroundWorker.enabled=true` (default), `POST /v1/responses` with `background=true` returns immediately with a `queued` response stored in Valkey and enqueues the `response_id` on a Valkey stream. A `duihua-background-worker` Deployment consumes the stream, issues a synchronous upstream `/responses` call with `background=false` and `store=false`, and updates Valkey when processing completes. Clients poll `GET /v1/responses/{id}` until the status leaves `queued` or `in_progress`. `POST /v1/responses/{id}/cancel` marks the stored response `cancelled` in Valkey (workers must respect terminal statuses).
 
 This path does not change inference Deployments or vLLM flags. Tune `responses-api-store.store.staleSeconds` for stale `in_progress` reconciliation on `GET /v1/responses/{id}` (`backgroundWorker.staleSeconds` is a deprecated alias; Helm fails at render time when it is set to a value that differs from the subchart setting). Stream retention (trim after `XACK`) is handled by the background-worker consumer, not gateway `XADD`.
 
@@ -71,18 +71,18 @@ Enable KEDA autoscaling with `backgroundWorker.autoscaling.enabled=true`. By def
 - **Scale-to-zero bootstrap:** when autoscaling uses `replicas.min: 0`, the gateway creates the stream consumer group via the responses-api-store gRPC `EnsureConsumerGroup` RPC on startup (workers also ensure the group when they start). KEDA owns Deployment replica counts when autoscaling is enabled; the chart omits `spec.replicas` so Helm upgrades do not reset scaled workers.
 - **Warm minimum:** set `replicas.min` to `1` or higher when you want a worker always ready (the kind defaults use `min: 1` so smoke tests do not depend on cold-start latency).
 - **Thresholds:** `jobsPerReplica` is the average workload target per replica; lower values scale up sooner. `maxConcurrentJobs` still limits upstream calls per pod.
-- **Legacy redis-streams driver:** set `backgroundWorker.autoscaling.driver: redis-streams` to scale from Valkey consumer-group lag directly. The helper prefers `lagCount` / `activationLagCount` on this driver. With bundled Valkey disabled while the store subchart stays enabled, the scaler still targets the chart-managed Valkey Service name unless issue #58 is addressed; prefer `store-metrics` for external Redis or disable the subchart and set `gateway.responsesApiStore.redisAddress`.
+- **Legacy redis-streams driver:** set `backgroundWorker.autoscaling.driver: redis-streams` to scale from Valkey consumer-group lag directly. The helper prefers `lagCount` / `activationLagCount` on this driver. With bundled Valkey disabled while the store subchart stays enabled, the scaler still targets the chart-managed Valkey Service name unless issue #58 is addressed; prefer `store-metrics` for external Redis or disable the subchart and set `duihua-gateway.responsesApiStore.redisAddress`.
 
 Local kind (`values-kind.yaml`) enables autoscaling with `min: 1`, `max: 2`, and a low `jobsPerReplica` so `scripts/smoke-test-kind.sh` can verify scale-up when queue workload grows.
 
 #### Local kind and CI scripts
 
-- `scripts/build-and-load-images.sh` builds and loads gateway and background-worker images, then restarts both Deployments when deployed.
+- `scripts/build-and-load-images.sh` builds the background-worker image, loads it into kind, and restarts the worker Deployment when deployed. The gateway image comes from the pinned `duihua-gateway` subchart.
 - `scripts/deploy-kind.sh` upgrades the Helm release and restarts gateway and background-worker Deployments so `:local` image tags are picked up. Kind values enable `serviceAccount.create` so gateway and worker pods use a chart-managed ServiceAccount consistently across upgrades.
 - `scripts/restart-background-worker-deployment.sh` restarts only the worker Deployment (optional `BACKGROUND_WORKER_DEPLOYMENT_REQUIRED=true` for hard failure when missing).
 - `scripts/smoke-test-kind.sh` waits for the gateway health endpoint and, when background queueing is enabled, for the background-worker Deployment to become ready before exercising completion, cancel, delete, resource checks, and optional KEDA scale-up when `backgroundWorker.autoscaling.enabled=true`.
 
-Set `backgroundWorker.enabled=false` to disable the worker Deployment while keeping the response store enabled. Disable `gateway.responsesApiStore.enabled` to turn off persistence and queueing entirely.
+Set `backgroundWorker.enabled=false` to disable the worker Deployment while keeping the response store enabled. Disable `duihua-gateway.responsesApiStore.enabled` to turn off persistence and queueing entirely.
 
 #### Background worker rollouts and graceful shutdown
 

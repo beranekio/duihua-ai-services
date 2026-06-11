@@ -1,26 +1,47 @@
+# Self-contained local gateway stack using published images from GHCR.
+# No checkout of beranekio/duihua-gateway is required.
+#
+# Gateway only (point UPSTREAM_BASE_URL at host-local or external inference):
+#   docker compose up
+#
+# With bundled vLLM CPU upstream:
+#   docker compose --profile inference up
+#
+# With Responses API store + Valkey:
+#   docker compose --profile store up
+#
+# Full local stack (inference + store):
+#   docker compose --profile inference --profile store up
+
 services:
-  gateway:
-    build:
-      context: ./services
-      dockerfile: gateway/Dockerfile
+  duihua-gateway:
+    image: ${DUIHUA_GATEWAY_IMAGE:-ghcr.io/beranekio/duihua-gateway:latest}
+    pull_policy: always
     environment:
       BIND_ADDR: 0.0.0.0:8080
-      UPSTREAM_BASE_URL: http://vllm:8000/v1
-      DEFAULT_MODEL: Qwen/Qwen3.5-0.8B
+      UPSTREAM_BASE_URL: ${UPSTREAM_BASE_URL:-http://vllm:8000/v1}
+      DEFAULT_MODEL: ${DEFAULT_MODEL:-Qwen/Qwen3.5-0.8B}
       RESPONSES_API_STORE_ENABLED: ${RESPONSES_API_STORE_ENABLED:-false}
       RESPONSES_API_STORE_ENDPOINT: http://responses-api-store:50051
       RESPONSES_BACKGROUND_ENABLED: ${RESPONSES_BACKGROUND_ENABLED:-false}
       RESPONSE_ID_STORE_TTL_SECONDS: "86400"
+      RUST_LOG: ${RUST_LOG:-info,duihua_gateway=debug}
     ports:
       - "8080:8080"
     depends_on:
       responses-api-store:
         condition: service_healthy
+        required: false
       vllm:
         condition: service_started
+        required: false
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
   responses-api-store:
-    image: ghcr.io/beranekio/responses-api-store:latest
+    profiles: [store]
+    image: ${RESPONSES_API_STORE_IMAGE:-ghcr.io/beranekio/responses-api-store:latest}
+    pull_policy: always
     environment:
       GRPC_LISTEN_ADDR: 0.0.0.0:50051
       RESPONSE_ID_STORE_URL: redis://valkey:6379
@@ -41,6 +62,7 @@ services:
         condition: service_healthy
 
   valkey:
+    profiles: [store]
     image: valkey/valkey:9.1.0-alpine
     command:
       - --save
@@ -56,6 +78,7 @@ services:
       retries: 20
 
   vllm:
+    profiles: [inference]
     image: vllm/vllm-openai-cpu:latest
     command:
       - Qwen/Qwen3.5-0.8B
@@ -72,7 +95,6 @@ services:
       - --gpu-memory-utilization
       - "0.6"
     environment:
-      # Set this in your shell if the model pull requires authentication.
       HUGGING_FACE_HUB_TOKEN: ${HUGGING_FACE_HUB_TOKEN:-}
     ports:
       - "8000:8000"

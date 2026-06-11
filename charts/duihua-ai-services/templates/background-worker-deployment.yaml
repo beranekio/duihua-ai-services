@@ -1,5 +1,7 @@
 {{- if eq (include "duihua.background.enabled" .) "true" }}
+{{- if .Values.configValidation.enabled -}}
 {{- $_ := include "duihua.validate.config" . -}}
+{{- end -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -30,7 +32,7 @@ spec:
             - name: RESPONSES_API_STORE_ENDPOINT
               value: {{ include "duihua.responsesApiStoreEndpoint" . | quote }}
             - name: RESPONSE_ID_STORE_TTL_SECONDS
-              value: {{ .Values.gateway.env.responseIdStoreTtlSeconds | quote }}
+              value: {{ dig "env" "responseIdStoreTtlSeconds" "86400" (index .Values "duihua-gateway" | default dict) | quote }}
             - name: BACKGROUND_QUEUE_CONSUMER_GROUP
               value: {{ .Values.backgroundWorker.consumerGroup | quote }}
             - name: BACKGROUND_QUEUE_CONSUMER_NAME

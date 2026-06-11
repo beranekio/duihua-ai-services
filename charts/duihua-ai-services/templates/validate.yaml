@@ -1,0 +1,3 @@
+{{- if .Values.configValidation.enabled -}}
+{{- $_ := include "duihua.validate.config" . -}}
+{{- end -}}

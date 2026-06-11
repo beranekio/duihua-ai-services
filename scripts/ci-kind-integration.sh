@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# End-to-end kind CI path: KEDA, gateway image, mock-vllm GHCR image, Helm deploy, smoke tests.
+# End-to-end kind CI path: KEDA, background worker image, mock-vllm, Helm deploy, smoke tests.
 # Used by .github/workflows/kind-integration.yml. Requires an existing kind cluster.
 set -euo pipefail
 
@@ -10,7 +10,6 @@ export KUBECTL_CONTEXT="${KUBECTL_CONTEXT:-kind-${CLUSTER_NAME}}"
 export RELEASE_NAME="${RELEASE_NAME:-duihua}"
 export NAMESPACE="${NAMESPACE:-duihua}"
 
-export GATEWAY_IMAGE_TAG="${GATEWAY_IMAGE_TAG:-local}"
 export MOCK_VLLM_IMAGE="${MOCK_VLLM_IMAGE:-ghcr.io/beranekio/mock-vllm:latest}"
 
 export VALUES_FILE="${VALUES_FILE:-${ROOT_DIR}/charts/duihua-ai-services/values-kind.yaml}"
@@ -26,11 +25,8 @@ run_step() {
 run_step "Installing KEDA"
 "${ROOT_DIR}/scripts/install-keda.sh"
 
-run_step "Building and loading gateway and background worker images"
+run_step "Building and loading background worker image"
 "${ROOT_DIR}/scripts/build-and-load-images.sh"
-
-run_step "Pulling and loading mock-vllm image"
-"${ROOT_DIR}/scripts/build-and-load-mock-vllm.sh"
 
 run_step "Deploying mock-vllm upstream (before gateway)"
 "${ROOT_DIR}/scripts/deploy-mock-vllm-kind.sh"
@@ -41,7 +37,18 @@ run_step "Verifying mock-vllm is reachable in-cluster"
 run_step "Deploying Helm chart (CI values overlay, inference disabled)"
 "${ROOT_DIR}/scripts/deploy-kind.sh"
 
-gateway_deployment="${RELEASE_NAME}-duihua-ai-services-gateway"
+CHART_PATH="${ROOT_DIR}/charts/duihua-ai-services"
+helm_values_args=(-f "${VALUES_FILE}")
+if [[ -n "${EXTRA_VALUES_FILE}" ]]; then
+  helm_values_args+=(-f "${EXTRA_VALUES_FILE}")
+fi
+# shellcheck source=scripts/_deploy-kind-probe.sh
+source "${ROOT_DIR}/scripts/_deploy-kind-probe.sh"
+gateway_deployment="$(probe_data_read gatewayFullname)"
+if [[ -z "${gateway_deployment}" ]]; then
+  echo "Failed to resolve gateway Deployment name from Helm probe." >&2
+  exit 1
+fi
 echo "Gateway upstream configuration:"
 kubectl get deployment "${gateway_deployment}" -n "${NAMESPACE}" \
   -o jsonpath='{range .spec.template.spec.containers[0].env[*]}{.name}={.value}{"\n"}{end}' \

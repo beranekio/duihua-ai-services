@@ -1,3 +1,7 @@
+configValidation:
+  # deploy-kind.sh injects gateway modelUpstreams and store endpoint before upgrade.
+  enabled: false
+
 responsesApiStoreService:
   enabled: true
 
@@ -11,11 +15,10 @@ responses-api-store:
   store:
     staleSeconds: 3600
 
-gateway:
-  image:
-    repository: duihua-gateway
-    tag: kind
-    pullPolicy: IfNotPresent
+duihua-gateway:
+  serviceAccount:
+    create: false
+    name: duihua-duihua-ai-services
   service:
     type: NodePort
     port: 80
@@ -31,8 +34,13 @@ gateway:
     responseIdStoreTtlSeconds: "86400"
     defaultModel: HuggingFaceTB/SmolLM2-135M-Instruct
     upstreamBaseUrl: http://127.0.0.1:9/v1
+    modelUpstreams: ""
   responsesApiStore:
     enabled: true
+    endpoint: ""
+    backgroundJobs:
+      enabled: true
+      consumerGroup: duihua-background
 
 backgroundWorker:
   enabled: true

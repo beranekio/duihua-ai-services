@@ -10,9 +10,50 @@
 {{- end -}}
 {{- end -}}
 
+{{- define "duihua.gateway.fullname" -}}
+{{- $gateway := index .Values "duihua-gateway" | default dict -}}
+{{- if $gateway.fullnameOverride -}}
+{{- $gateway.fullnameOverride | trunc 63 | trimSuffix "-" -}}
+{{- else -}}
+{{- $name := default "duihua-gateway" $gateway.nameOverride -}}
+{{- if contains $name .Release.Name -}}
+{{- .Release.Name | trunc 63 | trimSuffix "-" -}}
+{{- else -}}
+{{- printf "%s-%s" .Release.Name $name | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{- define "duihua.gateway.servicePort" -}}
+{{- $gateway := index .Values "duihua-gateway" | default dict -}}
+{{- $service := $gateway.service | default dict -}}
+{{- if $service.port -}}
+{{- $service.port | int -}}
+{{- else -}}
+{{- $http := $gateway.http | default dict -}}
+{{- if $http.listenAddr -}}
+{{- $parts := splitList ":" $http.listenAddr -}}
+{{- last $parts | int -}}
+{{- else -}}
+{{- $http.port | default 8080 | int -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{- define "duihua.gateway.modelUpstreams" -}}
+{{- if not .Values.inference.enabled -}}
+{{- else -}}
+{{- range $index, $model := .Values.inference.models -}}
+{{- if $index }},{{ end -}}
+{{- $model.name -}}=http://{{ include "duihua.fullname" $ }}-inference-{{ $index }}-proxy:8080/v1
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
 {{- define "duihua.responsesApiStore.enabled" -}}
-{{- if hasKey .Values.gateway.responsesApiStore "enabled" -}}
-{{- .Values.gateway.responsesApiStore.enabled -}}
+{{- $gateway := index .Values "duihua-gateway" | default dict -}}
+{{- if hasKey $gateway.responsesApiStore "enabled" -}}
+{{- $gateway.responsesApiStore.enabled -}}
 {{- else -}}
 {{- .Values.inference.responsesApiStore.enabled | default false -}}
 {{- end -}}
@@ -39,14 +80,15 @@ false
 {{- end -}}
 
 {{- define "duihua.responsesApiStoreEndpoint" -}}
-{{- $gatewayStore := dig "responsesApiStore" dict .Values.gateway -}}
+{{- $gateway := index .Values "duihua-gateway" | default dict -}}
+{{- $gatewayStore := $gateway.responsesApiStore | default dict -}}
 {{- if $gatewayStore.endpoint -}}
 {{- $gatewayStore.endpoint -}}
 {{- else if eq (include "duihua.responsesApiStoreService.enabled" .) "true" -}}
 {{- $store := get .Values "responses-api-store" | default dict -}}
 {{- printf "http://%s:%d" (include "duihua.responsesApiStoreService.fullname" .) (int (dig "grpc" "port" 50051 $store)) -}}
 {{- else -}}
-{{- fail "gateway.responsesApiStore.enabled=true requires responsesApiStoreService.enabled=true or gateway.responsesApiStore.endpoint" -}}
+{{- fail "duihua-gateway.responsesApiStore.enabled=true requires responsesApiStoreService.enabled=true or duihua-gateway.responsesApiStore.endpoint" -}}
 {{- end -}}
 {{- end -}}
 
@@ -54,7 +96,8 @@ false
 {{- if eq (include "duihua.responsesApiStoreService.enabled" .) "true" -}}
 {{- (index .Values "responses-api-store").backgroundQueue.streamKey -}}
 {{- else -}}
-{{- $backgroundJobs := get .Values.gateway.responsesApiStore "backgroundJobs" | default dict -}}
+{{- $gateway := index .Values "duihua-gateway" | default dict -}}
+{{- $backgroundJobs := get $gateway.responsesApiStore "backgroundJobs" | default dict -}}
 {{- if hasKey $backgroundJobs "streamKey" -}}
 {{- get $backgroundJobs "streamKey" -}}
 {{- else -}}
@@ -67,15 +110,21 @@ false
 {{- if eq (include "duihua.responsesApiStoreService.enabled" .) "true" -}}
 {{- $valkey := (index .Values "responses-api-store").valkey -}}
 {{- printf "%s-responses-api-store-valkey.%s.svc.cluster.local:%v" .Release.Name .Release.Namespace $valkey.service.port -}}
-{{- else if .Values.gateway.responsesApiStore.redisAddress -}}
-{{- .Values.gateway.responsesApiStore.redisAddress -}}
 {{- else -}}
-{{- fail "gateway.responsesApiStore.redisAddress must be set when responsesApiStoreService.enabled is false" -}}
+{{- $gateway := index .Values "duihua-gateway" | default dict -}}
+{{- $gatewayStore := $gateway.responsesApiStore | default dict -}}
+{{- if $gatewayStore.redisAddress -}}
+{{- $gatewayStore.redisAddress -}}
+{{- else -}}
+{{- fail "duihua-gateway.responsesApiStore.redisAddress must be set when responsesApiStoreService.enabled is false" -}}
+{{- end -}}
 {{- end -}}
 {{- end -}}
 
 {{- define "duihua.responseIdStoreTLSEnabled" -}}
-{{- if .Values.gateway.responsesApiStore.redisEnableTLS -}}
+{{- $gateway := index .Values "duihua-gateway" | default dict -}}
+{{- $gatewayStore := $gateway.responsesApiStore | default dict -}}
+{{- if $gatewayStore.redisEnableTLS -}}
 true
 {{- else -}}
 false
@@ -83,7 +132,9 @@ false
 {{- end -}}
 
 {{- define "duihua.responseIdStoreDatabaseIndex" -}}
-{{- .Values.gateway.responsesApiStore.redisDatabaseIndex | default "0" -}}
+{{- $gateway := index .Values "duihua-gateway" | default dict -}}
+{{- $gatewayStore := $gateway.responsesApiStore | default dict -}}
+{{- $gatewayStore.redisDatabaseIndex | default "0" -}}
 {{- end -}}
 
 {{- define "duihua.background.autoscaling.minReplicas" -}}
@@ -125,7 +176,8 @@ false
 
 {{- define "duihua.background.autoscaling.metricsUrl" -}}
 {{- $autoscaling := .Values.backgroundWorker.autoscaling | default dict -}}
-{{- $gatewayStore := dig "responsesApiStore" dict .Values.gateway -}}
+{{- $gateway := index .Values "duihua-gateway" | default dict -}}
+{{- $gatewayStore := $gateway.responsesApiStore | default dict -}}
 {{- if $autoscaling.metricsUrl -}}
 {{- $autoscaling.metricsUrl -}}
 {{- else if $gatewayStore.metricsUrl -}}
@@ -203,9 +255,12 @@ false
 {{- define "duihua.background.enabled" -}}
 {{- if ne (include "duihua.responsesApiStore.enabled" .) "true" -}}
 {{- else if not .Values.backgroundWorker.enabled -}}
-{{- else if eq (dig "backgroundJobs" "enabled" true .Values.gateway.responsesApiStore) false -}}
+{{- else -}}
+{{- $gateway := index .Values "duihua-gateway" | default dict -}}
+{{- if eq (dig "responsesApiStore" "backgroundJobs" "enabled" true $gateway) false -}}
 {{- else -}}
 true
+{{- end -}}
 {{- end -}}
 {{- end -}}
 
@@ -215,7 +270,7 @@ true
 {{- if hasKey $storeCfg "staleSeconds" -}}
 {{- $storeCfg.staleSeconds -}}
 {{- else -}}
-{{- $gateway := .Values.gateway | default dict -}}
+{{- $gateway := index .Values "duihua-gateway" | default dict -}}
 {{- $backgroundJobs := dig "responsesApiStore" "backgroundJobs" dict $gateway -}}
 {{- if hasKey $backgroundJobs "staleSeconds" -}}
 {{- get $backgroundJobs "staleSeconds" -}}
@@ -226,19 +281,36 @@ true
 {{- end -}}
 
 {{- define "duihua.validate.config" -}}
+{{- $gateway := index .Values "duihua-gateway" | default dict -}}
+{{- $gatewayStore := $gateway.responsesApiStore | default dict -}}
+{{- $gatewayEnv := $gateway.env | default dict -}}
+{{- if .Values.inference.enabled -}}
+{{- if not $gatewayEnv.modelUpstreams -}}
+{{- fail (printf "inference.enabled=true requires duihua-gateway.env.modelUpstreams (e.g. %s)" (include "duihua.gateway.modelUpstreams" .)) -}}
+{{- end -}}
+{{- end -}}
 {{- if eq (include "duihua.responsesApiStore.enabled" .) "true" -}}
-{{- $gatewayStore := dig "responsesApiStore" dict .Values.gateway -}}
-{{- if and (eq (include "duihua.responsesApiStoreService.enabled" .) "false") (not $gatewayStore.endpoint) -}}
-{{- fail "gateway.responsesApiStore.enabled=true requires responsesApiStoreService.enabled=true or gateway.responsesApiStore.endpoint" -}}
+{{- if not $gatewayStore.endpoint -}}
+{{- if eq (include "duihua.responsesApiStoreService.enabled" .) "true" -}}
+{{- fail (printf "duihua-gateway.responsesApiStore.enabled=true requires duihua-gateway.responsesApiStore.endpoint (e.g. %s)" (include "duihua.responsesApiStoreEndpoint" .)) -}}
+{{- else -}}
+{{- fail "duihua-gateway.responsesApiStore.enabled=true requires responsesApiStoreService.enabled=true or duihua-gateway.responsesApiStore.endpoint" -}}
+{{- end -}}
+{{- end -}}
+{{- $backgroundJobs := dig "responsesApiStore" "backgroundJobs" dict $gateway -}}
+{{- if and (hasKey $backgroundJobs "consumerGroup") (ne (get $backgroundJobs "consumerGroup") .Values.backgroundWorker.consumerGroup) -}}
+{{- fail (printf "duihua-gateway.responsesApiStore.backgroundJobs.consumerGroup (%v) must match backgroundWorker.consumerGroup (%v)" (get $backgroundJobs "consumerGroup") .Values.backgroundWorker.consumerGroup) -}}
+{{- end -}}
+{{- if and (not .Values.backgroundWorker.enabled) (dig "responsesApiStore" "backgroundJobs" "enabled" true $gateway) -}}
+{{- fail "backgroundWorker.enabled=false requires duihua-gateway.responsesApiStore.backgroundJobs.enabled=false" -}}
 {{- end -}}
 {{- if eq (include "duihua.responsesApiStoreService.enabled" .) "true" -}}
 {{- $store := get .Values "responses-api-store" | default dict -}}
 {{- $configured := dig "store" "staleSeconds" 3600 $store | int -}}
-{{- $gateway := .Values.gateway | default dict -}}
 {{- $backgroundJobs := dig "responsesApiStore" "backgroundJobs" dict $gateway -}}
 {{- if hasKey $backgroundJobs "staleSeconds" -}}
 {{- if ne (get $backgroundJobs "staleSeconds" | int) $configured -}}
-{{- fail (printf "gateway.responsesApiStore.backgroundJobs.staleSeconds (%v) must match responses-api-store.store.staleSeconds (%v)" (get $backgroundJobs "staleSeconds") $configured) -}}
+{{- fail (printf "duihua-gateway.responsesApiStore.backgroundJobs.staleSeconds (%v) must match responses-api-store.store.staleSeconds (%v)" (get $backgroundJobs "staleSeconds") $configured) -}}
 {{- end -}}
 {{- end -}}
 {{- if hasKey .Values.backgroundWorker "staleSeconds" -}}

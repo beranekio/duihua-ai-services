@@ -5,6 +5,9 @@ type: application
 version: 0.1.0
 appVersion: "0.1.0"
 dependencies:
+  - name: duihua-gateway
+    version: 0.0.0-f232c523e1be529ad817ed17f428d215d59309aa
+    repository: oci://ghcr.io/beranekio/charts
   - name: responses-api-store
     version: 0.0.0-a78ec243a7d5c8231c3b503191a18b05f113da08
     repository: oci://ghcr.io/beranekio/charts

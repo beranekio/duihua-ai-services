@@ -11,7 +11,6 @@ on:
       - services/Cargo.toml
       - services/Cargo.lock
       - services/background-worker/**
-      - services/gateway/**
   push:
     branches:
       - main
@@ -23,7 +22,6 @@ on:
       - services/Cargo.toml
       - services/Cargo.lock
       - services/background-worker/**
-      - services/gateway/**
   workflow_dispatch:
 
 concurrency:
@@ -36,7 +34,6 @@ permissions:
 env:
   CLUSTER_NAME: duihua-ci
   KUBECTL_CONTEXT: kind-duihua-ci
-  GATEWAY_IMAGE_TAG: ci-${{ github.sha }}
   MOCK_VLLM_IMAGE: ghcr.io/beranekio/mock-vllm:latest
 
 jobs:

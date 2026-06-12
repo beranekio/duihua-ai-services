@@ -70,7 +70,7 @@ verify_mock_vllm_upstream() {
     kubectl get pod "${probe_job}" -n "${namespace}" -o wide >&2 || true
     kubectl logs "${probe_job}" -n "${namespace}" >&2 || true
   else
-    kubectl logs "${probe_job}" -n "${namespace}"
+    kubectl logs "${probe_job}" -n "${namespace}" || true
     echo "mock-vllm upstream probe OK"
   fi
 

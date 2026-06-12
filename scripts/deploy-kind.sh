@@ -9,8 +9,6 @@ NAMESPACE="${NAMESPACE:-duihua}"
 CHART_PATH="${CHART_PATH:-$ROOT_DIR/charts/duihua-ai-services}"
 VALUES_FILE="${VALUES_FILE:-$ROOT_DIR/charts/duihua-ai-services/values-kind.yaml}"
 EXTRA_VALUES_FILE="${EXTRA_VALUES_FILE:-}"
-BACKGROUND_WORKER_IMAGE_REPO="${BACKGROUND_WORKER_IMAGE_REPO:-duihua-background-worker}"
-BACKGROUND_WORKER_IMAGE_TAG="${BACKGROUND_WORKER_IMAGE_TAG:-kind}"
 INFERENCE_ENABLED="${INFERENCE_ENABLED:-true}"
 TIMEOUT="${TIMEOUT:-300s}"
 
@@ -20,8 +18,6 @@ if [[ -n "${EXTRA_VALUES_FILE}" ]]; then
 fi
 
 helm_set_args=(
-  --set "duihua-background-worker.image.repository=${BACKGROUND_WORKER_IMAGE_REPO}"
-  --set "duihua-background-worker.image.tag=${BACKGROUND_WORKER_IMAGE_TAG}"
   --set "inference.enabled=${INFERENCE_ENABLED}"
 )
 

@@ -46,12 +46,11 @@ Do not re-run `scripts/kind-local-up.sh` to pick up gateway or chart edits on an
 **Incremental refresh** (cluster already running; required after gateway or chart edits):
 
 ```bash
-scripts/build-and-load-images.sh   # after background-worker image changes (restarts Deployment if deployed)
 scripts/deploy-kind.sh             # after chart or values changes (restarts Deployments after Helm upgrade)
 scripts/smoke-test-kind.sh
 ```
 
-`scripts/build-and-load-images.sh` builds and loads only the background-worker image (from a sibling `duihua-background-worker` checkout or a published GHCR image). The gateway image is provided by the pinned `duihua-gateway` OCI subchart. `scripts/deploy-kind.sh` restarts the gateway and background-worker Deployments by default after chart upgrades so config changes take effect. Set `GATEWAY_ROLLOUT_RESTART=false` or `BACKGROUND_WORKER_ROLLOUT_RESTART=false` to skip individual restarts, or use unique worker image tags instead of `:kind`.
+Gateway and background worker images come from the pinned `duihua-gateway` and `duihua-background-worker` OCI subcharts (GHCR). `scripts/deploy-kind.sh` restarts those Deployments by default after chart upgrades so config changes take effect. Set `GATEWAY_ROLLOUT_RESTART=false` or `BACKGROUND_WORKER_ROLLOUT_RESTART=false` to skip individual restarts.
 
 `scripts/smoke-test-kind.sh` exercises sync and background Responses API flows (including completion polling when the worker Deployment is present), cancel/delete behavior, in-flight continuation rejection, and background-worker Deployment resource requests. See `README.md` (Local kind workflow scripts) for tunables such as `GATEWAY_BASE_URL`, `DEFAULT_MODEL`, `RELEASE_NAME`, and `NAMESPACE`.
 
@@ -73,7 +72,7 @@ Run checks that match the files you changed. Chart and deploy-script edits need 
 
 ### Kind integration (chart or deploy script changes; see [Pre-push kind integration test](#pre-push-kind-integration-test))
 - `scripts/kind-local-up.sh` for first-time bootstrap only
-- On an existing cluster: `scripts/build-and-load-images.sh` and/or `scripts/deploy-kind.sh` (see [incremental refresh](#when-the-environment-supports-kind))
+- On an existing cluster: `scripts/deploy-kind.sh` (see [incremental refresh](#when-the-environment-supports-kind))
 - `scripts/smoke-test-kind.sh`
 
 For unrelated edits (docs-only, scripts that do not affect deploy behavior, etc.), run only the checks relevant to those paths.

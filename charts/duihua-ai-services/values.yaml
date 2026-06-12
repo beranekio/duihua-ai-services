@@ -72,13 +72,10 @@ duihua-gateway:
 
 duihua-background-worker:
   # Published from beranekio/duihua-background-worker (oci://ghcr.io/beranekio/charts).
+  # Image repository/tag are set by the published OCI chart (git-sha tag).
   # Enable with duihua-gateway.responsesApiStore.enabled and backgroundJobs.enabled.
   enabled: false
   replicaCount: 1
-  image:
-    repository: ghcr.io/beranekio/duihua-background-worker
-    tag: "latest"
-    pullPolicy: IfNotPresent
   responsesApiStore:
     # Set explicitly or use scripts/deploy-kind.sh which wires the subchart Service.
     endpoint: ""

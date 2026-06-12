@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# End-to-end kind CI path: KEDA, background worker image, mock-vllm, Helm deploy, smoke tests.
+# End-to-end kind CI path: KEDA, mock-vllm, Helm deploy, smoke tests.
 # Used by .github/workflows/kind-integration.yml. Requires an existing kind cluster.
 set -euo pipefail
 
@@ -24,9 +24,6 @@ run_step() {
 
 run_step "Installing KEDA"
 "${ROOT_DIR}/scripts/install-keda.sh"
-
-run_step "Building and loading background worker image"
-"${ROOT_DIR}/scripts/build-and-load-images.sh"
 
 run_step "Deploying mock-vllm upstream (before gateway)"
 "${ROOT_DIR}/scripts/deploy-mock-vllm-kind.sh"

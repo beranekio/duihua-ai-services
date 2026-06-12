@@ -49,10 +49,6 @@ duihua-background-worker:
     name: duihua-duihua-ai-services
   upstreamTimeoutSeconds: "120"
   terminationGracePeriodSeconds: 181
-  image:
-    repository: duihua-background-worker
-    tag: kind
-    pullPolicy: Never
   responsesApiStore:
     endpoint: ""
     responseIdStoreTtlSeconds: "86400"

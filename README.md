@@ -213,13 +213,10 @@ scripts/create-kind-cluster.sh
 # 2) Install/upgrade KEDA and KEDA HTTP add-on
 scripts/install-keda.sh
 
-# 3) Build the background worker image and load it into kind (gateway image comes from the duihua-gateway subchart)
-scripts/build-and-load-images.sh
-
-# 4) Deploy Helm chart, restart gateway pods, and verify rollout status
+# 3) Deploy Helm chart (gateway and background worker images come from pinned OCI subcharts)
 scripts/deploy-kind.sh
 
-# 5) Exercise the gateway Responses API store and background worker queue
+# 4) Exercise the gateway Responses API store and background worker queue
 scripts/smoke-test-kind.sh
 ```
 
@@ -231,7 +228,7 @@ scripts/kind-local-up.sh
 
 By default, this creates a kind cluster named `duihua-local`, installs the chart into namespace `duihua`, enables the bundled CPU vLLM inference deployment, and exposes the gateway at `http://127.0.0.1:8080` via the kind port mapping in `kind/cluster.yaml`.
 
-After a local background-worker image rebuild, `scripts/build-and-load-images.sh` and `scripts/deploy-kind.sh` restart the background-worker Deployment so running pods load the new image even when Helm reuses the same image tag (default `kind`). The gateway image is chosen by the pinned `duihua-gateway` OCI subchart and pulled from GHCR by the cluster. `scripts/deploy-kind.sh` also restarts the gateway Deployment after chart upgrades. Local kind scripts that talk to the cluster (`install-keda.sh`, `deploy-kind.sh`, and the rollout restart helpers) target the same kind cluster via `KUBECTL_CONTEXT` (default `kind-${CLUSTER_NAME}`), including Helm `--kube-context`. Set `GATEWAY_ROLLOUT_RESTART=false` or `BACKGROUND_WORKER_ROLLOUT_RESTART=false` to skip automatic restarts (rollout status is still checked after deploy). If a rollout times out while the Deployment is still Available with ready pods, set `ROLLOUT_STRICT=false` (or per-deployment `GATEWAY_ROLLOUT_STRICT` / `BACKGROUND_WORKER_ROLLOUT_STRICT`) to continue; the restart helpers print deployment conditions and events on failure.
+Gateway and background worker images are chosen by the pinned `duihua-gateway` and `duihua-background-worker` OCI subcharts and pulled from GHCR by the cluster. `scripts/deploy-kind.sh` restarts gateway and background-worker Deployments after chart upgrades so config changes take effect. Local kind scripts that talk to the cluster (`install-keda.sh`, `deploy-kind.sh`, and the rollout restart helpers) target the same kind cluster via `KUBECTL_CONTEXT` (default `kind-${CLUSTER_NAME}`), including Helm `--kube-context`. Set `GATEWAY_ROLLOUT_RESTART=false` or `BACKGROUND_WORKER_ROLLOUT_RESTART=false` to skip automatic restarts (rollout status is still checked after deploy). If a rollout times out while the Deployment is still Available with ready pods, set `ROLLOUT_STRICT=false` (or per-deployment `GATEWAY_ROLLOUT_STRICT` / `BACKGROUND_WORKER_ROLLOUT_STRICT`) to continue; the restart helpers print deployment conditions and events on failure.
 
 ```bash
 curl http://127.0.0.1:8080/healthz
@@ -248,11 +245,8 @@ Useful environment variables:
 - `RELEASE_NAME` (default: `duihua`)
 - `NAMESPACE` (default: `duihua`)
 - `GATEWAY_STORE_ENDPOINT` (default: `http://${RELEASE_NAME}-responses-api-store:50051`, used by `scripts/deploy-kind.sh`)
-- `BACKGROUND_WORKER_IMAGE_REPO` (default: `duihua-background-worker`)
-- `BACKGROUND_WORKER_IMAGE_TAG` (default: `kind`)
-- `BACKGROUND_WORKER_SRC` (default: `../duihua-background-worker`; falls back to published GHCR image when absent)
 - `GATEWAY_ROLLOUT_RESTART` (default: `true`, used by `scripts/deploy-kind.sh`)
-- `BACKGROUND_WORKER_ROLLOUT_RESTART` (default: `true`, used by `scripts/build-and-load-images.sh` and `scripts/deploy-kind.sh`)
+- `BACKGROUND_WORKER_ROLLOUT_RESTART` (default: `true`, used by `scripts/deploy-kind.sh`)
 - `INFERENCE_ENABLED` (default: `true`)
 - `VALUES_FILE` (default: `charts/duihua-ai-services/values-kind.yaml`)
 - `KEDA_NAMESPACE` (default: `keda`)
@@ -263,6 +257,6 @@ Useful environment variables:
 ## CI
 
 - **Validate** (`.github/workflows/validate.yml`): Runs on PRs and pushes to `main`. Performs `helm dependency build`, `helm lint`, and `helm template` rendering.
-- **Kind Integration** (`.github/workflows/kind-integration.yml`): On PRs/pushes that touch the chart, kind assets, or scripts (manual trigger also available). Creates a kind cluster (`duihua-ci`), runs `scripts/ci-kind-integration.sh` (KEDA, background-worker image from sibling repo or GHCR, gateway from the pinned `duihua-gateway` subchart, `ghcr.io/beranekio/mock-vllm:latest` upstream, Helm deploy with `values-kind-ci.yaml`, `scripts/smoke-test-kind.sh` including background completion when the worker Deployment is present).
+- **Kind Integration** (`.github/workflows/kind-integration.yml`): On PRs/pushes that touch the chart, kind assets, or scripts (manual trigger also available). Creates a kind cluster (`duihua-ci`), runs `scripts/ci-kind-integration.sh` (KEDA, gateway and background worker from pinned OCI subcharts, `ghcr.io/beranekio/mock-vllm:latest` upstream, Helm deploy with `values-kind-ci.yaml`, `scripts/smoke-test-kind.sh` including background completion when the worker Deployment is present).
 
 CI uses the published [mock-vllm](https://github.com/beranekio/mock-vllm) image (`ghcr.io/beranekio/mock-vllm:latest`) instead of the bundled vLLM inference stack. Local kind workflows still use `values-kind.yaml` with real inference via `scripts/kind-local-up.sh`.

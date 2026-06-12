@@ -27,7 +27,7 @@ wait_for_service_endpoints() {
   local timeout="${TIMEOUT:-120s}"
   local poll_interval_seconds="${POLL_INTERVAL_SECONDS:-2}"
 
-  local deadline=$((SECONDS + $(echo "${timeout}" | sed -E 's/s$//')))
+  local deadline=$((SECONDS + ${timeout%s}))
   echo "Waiting for endpoints on Service/${service_name} in namespace '${namespace}' (timeout ${timeout})..."
 
   while ((SECONDS < deadline)); do
@@ -51,28 +51,29 @@ verify_mock_vllm_upstream() {
   local mock_vllm_service="${MOCK_VLLM_SERVICE:-mock-vllm}"
   local probe_job="mock-vllm-upstream-probe-$$"
   local timeout="${TIMEOUT:-90s}"
-
-  delete_probe_pod() {
-    kubectl delete pod "${probe_job}" -n "${namespace}" --ignore-not-found >/dev/null 2>&1 || true
-  }
+  local status=0
 
   echo "Probing http://${mock_vllm_service}:8000/health from inside the cluster..."
   kubectl run "${probe_job}" -n "${namespace}" \
     --restart=Never \
     --image=curlimages/curl:8.12.1 \
     --command -- \
-    curl -sf --max-time 10 "http://${mock_vllm_service}:8000/health"
+    curl -sf --max-time 10 "http://${mock_vllm_service}:8000/health" || status=$?
 
-  if ! kubectl wait --for=jsonpath='{.status.phase}'=Succeeded "pod/${probe_job}" \
-    -n "${namespace}" --timeout="${timeout}"; then
+  if [[ ${status} -eq 0 ]]; then
+    kubectl wait --for=jsonpath='{.status.phase}'=Succeeded "pod/${probe_job}" \
+      -n "${namespace}" --timeout="${timeout}" || status=$?
+  fi
+
+  if [[ ${status} -ne 0 ]]; then
     echo "mock-vllm upstream probe failed; pod status:" >&2
     kubectl get pod "${probe_job}" -n "${namespace}" -o wide >&2 || true
     kubectl logs "${probe_job}" -n "${namespace}" >&2 || true
-    delete_probe_pod
-    return 1
+  else
+    kubectl logs "${probe_job}" -n "${namespace}"
+    echo "mock-vllm upstream probe OK"
   fi
 
-  kubectl logs "${probe_job}" -n "${namespace}"
-  echo "mock-vllm upstream probe OK"
-  delete_probe_pod
+  kubectl delete pod "${probe_job}" -n "${namespace}" --ignore-not-found >/dev/null 2>&1 || true
+  return "${status}"
 }

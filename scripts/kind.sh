@@ -68,14 +68,13 @@ cmd_ci() {
   run_step "Deploying Helm chart (CI values overlay, inference disabled)"
   cmd_deploy
 
-  local chart_path="${ROOT_DIR}/charts/duihua-ai-services"
+  CHART_PATH="${ROOT_DIR}/charts/duihua-ai-services"
   local -a helm_values_args=(-f "${VALUES_FILE}")
   if [[ -n "${EXTRA_VALUES_FILE}" ]]; then
     helm_values_args+=(-f "${EXTRA_VALUES_FILE}")
   fi
   # shellcheck source=scripts/_deploy-kind-probe.sh
   source "${ROOT_DIR}/scripts/_deploy-kind-probe.sh"
-  CHART_PATH="${chart_path}"
   local gateway_deployment
   gateway_deployment="$(probe_data_read gatewayFullname)"
   if [[ -z "${gateway_deployment}" ]]; then

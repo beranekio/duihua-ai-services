@@ -83,6 +83,13 @@ if [[ -n "${store_endpoint}" ]]; then
   )
 fi
 
+# Subcharts are evaluated during Helm probes; ensure store-metrics URL is set
+# before any full probe render when kind values enable worker autoscaling.
+worker_metrics_url="$(probe_data backgroundWorkerMetricsUrl 2>/dev/null || true)"
+if [[ -n "${worker_metrics_url}" ]]; then
+  helm_set_args+=(--set "duihua-background-worker.autoscaling.metricsUrl=${worker_metrics_url}")
+fi
+
 PARENT_FULLNAME="$(probe_data duihuaFullname)"
 GATEWAY_FULLNAME="$(probe_data gatewayFullname)"
 if [[ -z "${PARENT_FULLNAME}" || -z "${GATEWAY_FULLNAME}" ]]; then
@@ -97,11 +104,6 @@ if [[ "$(probe_data parentServiceAccountCreate)" == "true" ]]; then
     --set "duihua-background-worker.serviceAccount.create=false"
     --set "duihua-background-worker.serviceAccount.name=$(probe_data serviceAccountName)"
   )
-fi
-
-worker_metrics_url="$(probe_data backgroundWorkerMetricsUrl)"
-if [[ -n "${worker_metrics_url}" ]]; then
-  helm_set_args+=(--set "duihua-background-worker.autoscaling.metricsUrl=${worker_metrics_url}")
 fi
 
 GATEWAY_ENV_VALUES_FILE="$(mktemp)"

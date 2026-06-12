@@ -9,6 +9,7 @@ render_deploy_kind_probe_read() {
     --set "deployKindProbe.enabled=true" \
     --set "inference.enabled=${INFERENCE_ENABLED}" \
     --set "duihua-gateway.responsesApiStore.enabled=false" \
+    --set "duihua-background-worker.enabled=false" \
     --show-only templates/deploy-kind-probe.yaml
 }
 

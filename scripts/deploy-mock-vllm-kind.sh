@@ -2,6 +2,9 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=scripts/_common.sh
+source "${ROOT_DIR}/scripts/_common.sh"
+
 CLUSTER_NAME="${CLUSTER_NAME:-duihua-local}"
 KUBECTL_CONTEXT="${KUBECTL_CONTEXT:-kind-${CLUSTER_NAME}}"
 NAMESPACE="${NAMESPACE:-duihua}"
@@ -22,14 +25,6 @@ fi
 echo "Loading image '${MOCK_VLLM_IMAGE}' into kind cluster '${CLUSTER_NAME}'..."
 kind load docker-image "${MOCK_VLLM_IMAGE}" --name "${CLUSTER_NAME}"
 
-kubectl() {
-  if [[ -n "${KUBECTL_CONTEXT}" ]]; then
-    command kubectl --context "${KUBECTL_CONTEXT}" "$@"
-  else
-    command kubectl "$@"
-  fi
-}
-
 echo "Deploying mock-vllm into namespace '${NAMESPACE}'..."
 kubectl create namespace "${NAMESPACE}" --dry-run=client -o yaml | kubectl apply -f -
 
@@ -47,14 +42,13 @@ kubectl apply -n "${NAMESPACE}" -f "${rendered_manifest}"
 
 if [[ "${deployment_existed}" == "true" ]]; then
   NAMESPACE="${NAMESPACE}" TIMEOUT="${TIMEOUT}" KUBECTL_CONTEXT="${KUBECTL_CONTEXT}" \
-    MOCK_VLLM_DEPLOYMENT_REQUIRED=true \
-    "${ROOT_DIR}/scripts/restart-mock-vllm-deployment.sh"
+    COMPONENT=mock-vllm MOCK_VLLM_DEPLOYMENT_REQUIRED=true \
+    "${ROOT_DIR}/scripts/restart-deployment.sh"
 else
   echo "Waiting for initial mock-vllm rollout..."
   kubectl rollout status deployment/mock-vllm -n "${NAMESPACE}" --timeout="${TIMEOUT}"
 fi
 
-NAMESPACE="${NAMESPACE}" KUBECTL_CONTEXT="${KUBECTL_CONTEXT}" TIMEOUT="${TIMEOUT}" \
-  "${ROOT_DIR}/scripts/wait-for-service-endpoints.sh" mock-vllm
+wait_for_service_endpoints mock-vllm
 
 echo "mock-vllm deployment ready."

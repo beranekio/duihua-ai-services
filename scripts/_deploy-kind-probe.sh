@@ -1,4 +1,4 @@
-# Shared Helm probe helpers for scripts/deploy-kind.sh and scripts/ci-kind-integration.sh.
+# Shared Helm probe helpers for scripts/deploy-kind.sh and scripts/kind.sh ci.
 # Requires: RELEASE_NAME, CHART_PATH, INFERENCE_ENABLED, and helm_values_args (bash array).
 # Optional: helm_set_args (bash array) for deploy-time overrides during the full probe.
 

@@ -2,11 +2,15 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=scripts/_common.sh
+source "${ROOT_DIR}/scripts/_common.sh"
+
 GATEWAY_BASE_URL="${GATEWAY_BASE_URL:-http://127.0.0.1:8080}"
 DEFAULT_MODEL="${DEFAULT_MODEL:-HuggingFaceTB/SmolLM2-135M-Instruct}"
+CLUSTER_NAME="${CLUSTER_NAME:-duihua-local}"
 RELEASE_NAME="${RELEASE_NAME:-duihua}"
 NAMESPACE="${NAMESPACE:-duihua}"
-KUBECTL_CONTEXT="${KUBECTL_CONTEXT:-}"
+KUBECTL_CONTEXT="${KUBECTL_CONTEXT:-kind-${CLUSTER_NAME}}"
 HEALTHZ_RETRIES="${HEALTHZ_RETRIES:-30}"
 HEALTHZ_INTERVAL_SECONDS="${HEALTHZ_INTERVAL_SECONDS:-5}"
 BACKGROUND_POLL_ATTEMPTS="${BACKGROUND_POLL_ATTEMPTS:-45}"
@@ -15,22 +19,6 @@ CANCEL_POLL_ATTEMPTS="${CANCEL_POLL_ATTEMPTS:-20}"
 DELETE_POLL_ATTEMPTS="${DELETE_POLL_ATTEMPTS:-10}"
 AUTOSCALE_POLL_ATTEMPTS="${AUTOSCALE_POLL_ATTEMPTS:-24}"
 AUTOSCALE_POLL_INTERVAL_SECONDS="${AUTOSCALE_POLL_INTERVAL_SECONDS:-5}"
-
-require_command() {
-  local command_name="$1"
-  if ! command -v "${command_name}" >/dev/null 2>&1; then
-    echo "Required command not found: ${command_name}" >&2
-    exit 1
-  fi
-}
-
-kubectl() {
-  if [[ -n "${KUBECTL_CONTEXT}" ]]; then
-    command kubectl --context "${KUBECTL_CONTEXT}" "$@"
-  else
-    command kubectl "$@"
-  fi
-}
 
 json_get() {
   local payload="$1"

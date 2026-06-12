@@ -2,6 +2,9 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=scripts/_common.sh
+source "${ROOT_DIR}/scripts/_common.sh"
+
 CLUSTER_NAME="${CLUSTER_NAME:-duihua-local}"
 KUBECTL_CONTEXT="${KUBECTL_CONTEXT:-kind-${CLUSTER_NAME}}"
 RELEASE_NAME="${RELEASE_NAME:-duihua}"
@@ -51,15 +54,9 @@ duihua-gateway:
 EOF
 }
 
-kubectl() {
-  if [[ -n "${KUBECTL_CONTEXT}" ]]; then
-    command kubectl --context "${KUBECTL_CONTEXT}" "$@"
-  else
-    command kubectl "$@"
-  fi
-}
-
-"${ROOT_DIR}/scripts/update-helm-dependencies.sh"
+echo "Updating Helm dependencies for ${CHART_PATH}..."
+helm dependency update "${CHART_PATH}"
+echo "Helm dependencies updated."
 
 store_endpoint=""
 if [[ -v GATEWAY_STORE_ENDPOINT ]]; then
@@ -136,14 +133,14 @@ RELEASE_NAME="${RELEASE_NAME}" NAMESPACE="${NAMESPACE}" TIMEOUT="${TIMEOUT}" \
   "${ROOT_DIR}/scripts/wait-for-responses-api-store.sh"
 
 RELEASE_NAME="${RELEASE_NAME}" NAMESPACE="${NAMESPACE}" TIMEOUT="${TIMEOUT}" \
-  KUBECTL_CONTEXT="${KUBECTL_CONTEXT}" GATEWAY_DEPLOYMENT_REQUIRED=true \
+  KUBECTL_CONTEXT="${KUBECTL_CONTEXT}" COMPONENT=gateway GATEWAY_DEPLOYMENT_REQUIRED=true \
   GATEWAY_DEPLOYMENT="${GATEWAY_FULLNAME}" \
-  "${ROOT_DIR}/scripts/restart-gateway-deployment.sh"
+  "${ROOT_DIR}/scripts/restart-deployment.sh"
 
 RELEASE_NAME="${RELEASE_NAME}" NAMESPACE="${NAMESPACE}" TIMEOUT="${TIMEOUT}" \
-  KUBECTL_CONTEXT="${KUBECTL_CONTEXT}" \
+  KUBECTL_CONTEXT="${KUBECTL_CONTEXT}" COMPONENT=background-worker \
   BACKGROUND_WORKER_DEPLOYMENT="${WORKER_FULLNAME}" \
-  "${ROOT_DIR}/scripts/restart-background-worker-deployment.sh"
+  "${ROOT_DIR}/scripts/restart-deployment.sh"
 
 RELEASE_NAME="${RELEASE_NAME}" NAMESPACE="${NAMESPACE}" TIMEOUT="${TIMEOUT}" \
   KUBECTL_CONTEXT="${KUBECTL_CONTEXT}" \

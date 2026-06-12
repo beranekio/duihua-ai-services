@@ -77,8 +77,8 @@ Local kind (`values-kind.yaml`) enables autoscaling with `min: 1`, `max: 2`, and
 
 #### Local kind and CI scripts
 
-- `scripts/deploy-kind.sh` upgrades the Helm release and restarts gateway and background-worker Deployments after chart upgrades. Gateway and worker images come from the pinned OCI subcharts (GHCR). Kind values enable `serviceAccount.create` so gateway and worker pods use a chart-managed ServiceAccount consistently across upgrades.
-- `scripts/restart-background-worker-deployment.sh` restarts only the worker Deployment (optional `BACKGROUND_WORKER_DEPLOYMENT_REQUIRED=true` for hard failure when missing).
+- `scripts/kind.sh` provides `bootstrap`, `up`, `deploy`, `smoke`, and `ci` commands for local kind and GitHub Actions workflows.
+- `scripts/deploy-kind.sh` upgrades the Helm release and restarts gateway and background-worker Deployments after chart upgrades via `scripts/restart-deployment.sh`. Gateway and worker images come from the pinned OCI subcharts (GHCR). Kind values enable `serviceAccount.create` so gateway and worker pods use a chart-managed ServiceAccount consistently across upgrades.
 - `scripts/smoke-test-kind.sh` waits for the gateway health endpoint and, when background queueing is enabled, for the background-worker Deployment to become ready before exercising completion, cancel, delete, resource checks, and optional KEDA scale-up when `duihua-background-worker.autoscaling.enabled=true`.
 
 Set `duihua-background-worker.enabled=false` to disable the worker Deployment while keeping the response store enabled (leave `duihua-gateway.responsesApiStore.backgroundJobs.enabled=false`, the chart default). Disable `duihua-gateway.responsesApiStore.enabled` to turn off persistence and queueing entirely.
@@ -87,4 +87,4 @@ Set `duihua-background-worker.enabled=false` to disable the worker Deployment wh
 
 On SIGTERM (Helm upgrade, `kubectl rollout restart`, or pod deletion), the worker stops issuing new `XREADGROUP` / `XAUTOCLAIM` reads, closes its concurrency limiter, and awaits in-flight upstream jobs before exiting. Tune `duihua-background-worker.terminationGracePeriodSeconds` to exceed `duihua-background-worker.upstreamTimeoutSeconds` plus the configured `duihua-background-worker.blockMs` interval and a safety margin (chart default 665s = 600s upstream + 5s block + 60s margin). SIGTERM can arrive while `XREADGROUP BLOCK` is in flight; the worker lets that read finish before draining any entry it claimed, so grace must cover block time as well as upstream timeout. The worker logs a recommended value at startup; align the chart setting with that figure so rollouts can finish active background Responses API work instead of leaving entries orphaned in the old pod's pending list until autoclaim marks them failed.
 
-`scripts/restart-background-worker-deployment.sh` (used by `deploy-kind.sh`) triggers this path; allow the grace period to elapse before forcing pod deletion.
+`scripts/restart-deployment.sh` with `COMPONENT=background-worker` (used by `deploy-kind.sh`) triggers this path; allow the grace period to elapse before forcing pod deletion.

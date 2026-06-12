@@ -2,20 +2,15 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=scripts/_common.sh
+source "${ROOT_DIR}/scripts/_common.sh"
+
 RELEASE_NAME="${RELEASE_NAME:-duihua}"
 NAMESPACE="${NAMESPACE:-duihua}"
 TIMEOUT="${TIMEOUT:-300s}"
 KUBECTL_CONTEXT="${KUBECTL_CONTEXT:-}"
 DEPLOYMENT="${BACKGROUND_WORKER_DEPLOYMENT:-${RELEASE_NAME}-duihua-background-worker}"
 STARTUP_MARKER="background worker startup: recommended terminationGracePeriodSeconds="
-
-kubectl() {
-  if [[ -n "${KUBECTL_CONTEXT}" ]]; then
-    command kubectl --context "${KUBECTL_CONTEXT}" "$@"
-  else
-    command kubectl "$@"
-  fi
-}
 
 if ! kubectl get deployment "${DEPLOYMENT}" -n "${NAMESPACE}" >/dev/null 2>&1; then
   echo "background worker deployment not present; skipping readiness wait"

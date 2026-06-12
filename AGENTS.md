@@ -37,11 +37,11 @@ Run the end-to-end kind smoke test so chart, gateway, and background-worker chan
 **First-time bootstrap** (new kind cluster or full reinstall):
 
 ```bash
-scripts/kind-local-up.sh
-scripts/smoke-test-kind.sh
+scripts/kind.sh up
+scripts/kind.sh smoke
 ```
 
-Do not re-run `scripts/kind-local-up.sh` to pick up gateway or chart edits on an existing cluster. Use incremental refresh instead.
+Do not re-run `scripts/kind.sh up` to pick up gateway or chart edits on an existing cluster. Use incremental refresh instead.
 
 **Incremental refresh** (cluster already running; required after gateway or chart edits):
 
@@ -71,9 +71,9 @@ Run checks that match the files you changed. Chart and deploy-script edits need 
 - `bash -n scripts/*.sh` when editing shell helpers
 
 ### Kind integration (chart or deploy script changes; see [Pre-push kind integration test](#pre-push-kind-integration-test))
-- `scripts/kind-local-up.sh` for first-time bootstrap only
-- On an existing cluster: `scripts/deploy-kind.sh` (see [incremental refresh](#when-the-environment-supports-kind))
-- `scripts/smoke-test-kind.sh`
+- `scripts/kind.sh up` for first-time bootstrap only
+- On an existing cluster: `scripts/kind.sh deploy` or `scripts/deploy-kind.sh` (see [incremental refresh](#when-the-environment-supports-kind))
+- `scripts/kind.sh smoke` or `scripts/smoke-test-kind.sh`
 
 For unrelated edits (docs-only, scripts that do not affect deploy behavior, etc.), run only the checks relevant to those paths.
 

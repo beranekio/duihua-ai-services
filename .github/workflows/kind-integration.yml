@@ -46,4 +46,4 @@ jobs:
           config: kind/cluster.yaml
 
       - name: Run kind integration smoke tests
-        run: scripts/ci-kind-integration.sh
+        run: scripts/kind.sh ci

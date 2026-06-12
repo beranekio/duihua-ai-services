@@ -10,56 +10,6 @@ permissions:
   contents: read
 
 jobs:
-  rust:
-    name: Rust checks
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: services
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-
-      - name: Cache cargo artifacts
-        uses: actions/cache@v5
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            services/target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('services/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-
-
-      - name: Install Rust toolchain
-        run: |
-          rustup toolchain install stable --profile minimal --component rustfmt,clippy
-          rustup default stable
-
-      - name: Install protoc
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
-
-      - name: Check formatting
-        run: cargo fmt --all -- --check
-
-      - name: Run clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
-
-      - name: Run tests
-        run: cargo test --all-features
-
-  dockerfile:
-    name: Dockerfile lint
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-
-      - name: Lint background worker Dockerfile
-        uses: hadolint/hadolint-action@v3.3.0
-        with:
-          dockerfile: services/background-worker/Dockerfile
-
   helm:
     name: Helm chart validation
     runs-on: ubuntu-latest
@@ -90,10 +40,14 @@ jobs:
             -f charts/duihua-ai-services/values-kind.yaml \
             --set duihua-gateway.responsesApiStore.endpoint=http://duihua-responses-api-store:50051 \
             --set duihua-gateway.env.modelUpstreams="HuggingFaceTB/SmolLM2-135M-Instruct=http://duihua-duihua-ai-services-inference-0-proxy:8080/v1" \
+            --set duihua-background-worker.responsesApiStore.endpoint=http://duihua-responses-api-store:50051 \
+            --set duihua-background-worker.autoscaling.metricsUrl=http://duihua-responses-api-store.duihua.svc.cluster.local:8080/metrics/background-queue?consumer_group=duihua-background \
             --debug > /tmp/helm-rendered.yaml
           helm template duihua charts/duihua-ai-services \
             -f charts/duihua-ai-services/values-kind.yaml \
             --set duihua-gateway.responsesApiStore.endpoint=http://duihua-responses-api-store:50051 \
             --set duihua-gateway.env.modelUpstreams="HuggingFaceTB/SmolLM2-135M-Instruct=http://duihua-duihua-ai-services-inference-0-proxy:8080/v1" \
+            --set duihua-background-worker.responsesApiStore.endpoint=http://duihua-responses-api-store:50051 \
+            --set duihua-background-worker.autoscaling.metricsUrl=http://duihua-responses-api-store.duihua.svc.cluster.local:8080/metrics/background-queue?consumer_group=duihua-background \
             --set ingress.enabled=true \
             --debug > /tmp/helm-rendered-ingress.yaml

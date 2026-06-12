@@ -1,15 +1,5 @@
 version: 2
 updates:
-  - package-ecosystem: "cargo"
-    directory: "/services"
-    schedule:
-      interval: "weekly"
-
-  - package-ecosystem: "docker"
-    directory: "/services/background-worker"
-    schedule:
-      interval: "weekly"
-
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:

@@ -8,9 +8,6 @@ on:
       - charts/**
       - kind/**
       - scripts/**
-      - services/Cargo.toml
-      - services/Cargo.lock
-      - services/background-worker/**
   push:
     branches:
       - main
@@ -19,9 +16,6 @@ on:
       - charts/**
       - kind/**
       - scripts/**
-      - services/Cargo.toml
-      - services/Cargo.lock
-      - services/background-worker/**
   workflow_dispatch:
 
 concurrency:

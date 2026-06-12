@@ -70,15 +70,19 @@ duihua-gateway:
     # Override the store metrics URL for KEDA when responsesApiStoreService.enabled=false.
     metricsUrl: ""
 
-backgroundWorker:
-  # Consume background=true Responses API jobs from a Valkey stream when the
-  # gateway response store is enabled.
-  enabled: true
+duihua-background-worker:
+  # Published from beranekio/duihua-background-worker (oci://ghcr.io/beranekio/charts).
+  # Enable with duihua-gateway.responsesApiStore.enabled and backgroundJobs.enabled.
+  enabled: false
   replicaCount: 1
   image:
-    repository: ghcr.io/example/duihua-background-worker
-    tag: "0.1.0"
+    repository: ghcr.io/beranekio/duihua-background-worker
+    tag: "latest"
     pullPolicy: IfNotPresent
+  responsesApiStore:
+    # Set explicitly or use scripts/deploy-kind.sh which wires the subchart Service.
+    endpoint: ""
+    responseIdStoreTtlSeconds: "86400"
   consumerGroup: *consumer-group
   # Keep below the responses-api-store Valkey client response timeout (500ms).
   blockMs: 400
@@ -94,31 +98,22 @@ backgroundWorker:
     # driver redis-streams: legacy Valkey stream lag scaler (deprecated).
     enabled: false
     driver: store-metrics
-    # Threshold aliases; prefer jobsPerReplica / activationTargetValue for store-metrics.
     lagCount: 5
     activationLagCount: 0
     # Override when responsesApiStoreService.enabled=false or metrics are exposed elsewhere.
     metricsUrl: ""
     scaledownPeriod: 300
     pollingInterval: 15
-    # redis-streams driver only: TLS/password for direct Valkey access.
-    enableTLS: false
-    passwordFromEnv: ""
+    valkey:
+      address: ""
+      enableTLS: false
+      passwordFromEnv: ""
+      databaseIndex: 0
+      streamKey: responses-api-store:background
     replicas:
       min: 1
       max: 4
     scaledObjectAnnotations: {}
-  queueBootstrap:
-    # Deprecated: the gateway ensures the stream consumer group via gRPC on startup when
-    # background jobs are enabled (including scale-to-zero with replicas.min: 0). Values
-    # below are unused; kept for a possible future Helm hook if needed.
-    image:
-      repository: redis
-      tag: 7-alpine
-      pullPolicy: IfNotPresent
-    # When using an external rediss:// store, set true only if you accept skipping TLS
-    # verification for the bootstrap connection (prefer mounting a CA via a future option).
-    tlsInsecure: false
   resources:
     requests:
       cpu: 100m

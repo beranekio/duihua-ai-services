@@ -20,8 +20,8 @@ if [[ -n "${EXTRA_VALUES_FILE}" ]]; then
 fi
 
 helm_set_args=(
-  --set "backgroundWorker.image.repository=${BACKGROUND_WORKER_IMAGE_REPO}"
-  --set "backgroundWorker.image.tag=${BACKGROUND_WORKER_IMAGE_TAG}"
+  --set "duihua-background-worker.image.repository=${BACKGROUND_WORKER_IMAGE_REPO}"
+  --set "duihua-background-worker.image.tag=${BACKGROUND_WORKER_IMAGE_TAG}"
   --set "inference.enabled=${INFERENCE_ENABLED}"
 )
 
@@ -65,15 +65,22 @@ kubectl() {
 
 "${ROOT_DIR}/scripts/update-helm-dependencies.sh"
 
+store_endpoint=""
 if [[ -v GATEWAY_STORE_ENDPOINT ]]; then
-  helm_set_args+=(--set "duihua-gateway.responsesApiStore.endpoint=${GATEWAY_STORE_ENDPOINT}")
+  store_endpoint="${GATEWAY_STORE_ENDPOINT}"
 else
   configured_store_endpoint="$(probe_data_read configuredStoreEndpoint)"
-  if [[ -z "${configured_store_endpoint}" && "$(probe_data_read responsesApiStoreServiceEnabled)" == "true" ]]; then
-    helm_set_args+=(
-      --set "duihua-gateway.responsesApiStore.endpoint=http://${RELEASE_NAME}-responses-api-store:50051"
-    )
+  if [[ -n "${configured_store_endpoint}" ]]; then
+    store_endpoint="${configured_store_endpoint}"
+  elif [[ "$(probe_data_read responsesApiStoreServiceEnabled)" == "true" ]]; then
+    store_endpoint="http://${RELEASE_NAME}-responses-api-store:50051"
   fi
+fi
+if [[ -n "${store_endpoint}" ]]; then
+  helm_set_args+=(
+    --set "duihua-gateway.responsesApiStore.endpoint=${store_endpoint}"
+    --set "duihua-background-worker.responsesApiStore.endpoint=${store_endpoint}"
+  )
 fi
 
 PARENT_FULLNAME="$(probe_data duihuaFullname)"
@@ -87,7 +94,14 @@ if [[ "$(probe_data parentServiceAccountCreate)" == "true" ]]; then
   helm_set_args+=(
     --set "duihua-gateway.serviceAccount.create=false"
     --set "duihua-gateway.serviceAccount.name=$(probe_data serviceAccountName)"
+    --set "duihua-background-worker.serviceAccount.create=false"
+    --set "duihua-background-worker.serviceAccount.name=$(probe_data serviceAccountName)"
   )
+fi
+
+worker_metrics_url="$(probe_data backgroundWorkerMetricsUrl)"
+if [[ -n "${worker_metrics_url}" ]]; then
+  helm_set_args+=(--set "duihua-background-worker.autoscaling.metricsUrl=${worker_metrics_url}")
 fi
 
 GATEWAY_ENV_VALUES_FILE="$(mktemp)"

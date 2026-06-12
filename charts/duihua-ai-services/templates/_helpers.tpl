@@ -24,6 +24,20 @@
 {{- end -}}
 {{- end -}}
 
+{{- define "duihua.backgroundWorker.fullname" -}}
+{{- $worker := index .Values "duihua-background-worker" | default dict -}}
+{{- if $worker.fullnameOverride -}}
+{{- $worker.fullnameOverride | trunc 63 | trimSuffix "-" -}}
+{{- else -}}
+{{- $name := default "duihua-background-worker" $worker.nameOverride -}}
+{{- if contains $name .Release.Name -}}
+{{- .Release.Name | trunc 63 | trimSuffix "-" -}}
+{{- else -}}
+{{- printf "%s-%s" .Release.Name $name | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
 {{- define "duihua.gateway.servicePort" -}}
 {{- $gateway := index .Values "duihua-gateway" | default dict -}}
 {{- $service := $gateway.service | default dict -}}
@@ -101,7 +115,7 @@ false
 {{- if hasKey $backgroundJobs "streamKey" -}}
 {{- get $backgroundJobs "streamKey" -}}
 {{- else -}}
-{{- .Values.backgroundWorker.streamKey | default "responses-api-store:background" -}}
+{{- dig "autoscaling" "valkey" "streamKey" "responses-api-store:background" (index .Values "duihua-background-worker" | default dict) -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}
@@ -137,30 +151,6 @@ false
 {{- $gatewayStore.redisDatabaseIndex | default "0" -}}
 {{- end -}}
 
-{{- define "duihua.background.autoscaling.minReplicas" -}}
-{{- $replicas := get .Values.backgroundWorker.autoscaling "replicas" | default dict -}}
-{{- if hasKey $replicas "min" -}}
-{{- $replicas.min -}}
-{{- else -}}
-1
-{{- end -}}
-{{- end -}}
-
-{{- define "duihua.background.autoscaling.maxReplicas" -}}
-{{- $replicas := get .Values.backgroundWorker.autoscaling "replicas" | default dict -}}
-{{- if hasKey $replicas "max" -}}
-{{- $replicas.max -}}
-{{- else -}}
-4
-{{- end -}}
-{{- end -}}
-
-{{- define "duihua.background.autoscaling.driver" -}}
-{{- $autoscaling := .Values.backgroundWorker.autoscaling | default dict -}}
-{{- $driver := $autoscaling.driver | default "store-metrics" -}}
-{{- $driver -}}
-{{- end -}}
-
 {{- define "duihua.responsesApiStoreMetricsPort" -}}
 {{- $store := get .Values "responses-api-store" | default dict -}}
 {{- $metrics := $store.metrics | default dict -}}
@@ -174,8 +164,9 @@ false
 {{- end -}}
 {{- end -}}
 
-{{- define "duihua.background.autoscaling.metricsUrl" -}}
-{{- $autoscaling := .Values.backgroundWorker.autoscaling | default dict -}}
+{{- define "duihua.backgroundWorker.autoscaling.metricsUrl" -}}
+{{- $worker := index .Values "duihua-background-worker" | default dict -}}
+{{- $autoscaling := $worker.autoscaling | default dict -}}
 {{- $gateway := index .Values "duihua-gateway" | default dict -}}
 {{- $gatewayStore := $gateway.responsesApiStore | default dict -}}
 {{- if $autoscaling.metricsUrl -}}
@@ -186,80 +177,23 @@ false
 {{- $store := get .Values "responses-api-store" | default dict -}}
 {{- $metrics := $store.metrics | default dict -}}
 {{- if and (hasKey $metrics "enabled") (not $metrics.enabled) -}}
-{{- fail "responses-api-store.metrics.enabled must be true when backgroundWorker.autoscaling.driver is store-metrics (or set backgroundWorker.autoscaling.metricsUrl)" -}}
+{{- fail "responses-api-store.metrics.enabled must be true when duihua-background-worker.autoscaling.driver is store-metrics (or set duihua-background-worker.autoscaling.metricsUrl)" -}}
 {{- end -}}
-{{- $consumerGroup := .Values.backgroundWorker.consumerGroup | urlquery -}}
+{{- $consumerGroup := $worker.consumerGroup | default "duihua-background" | urlquery -}}
 {{- printf "http://%s.%s.svc.cluster.local:%v/metrics/background-queue?consumer_group=%s" (include "duihua.responsesApiStoreService.fullname" .) .Release.Namespace (include "duihua.responsesApiStoreMetricsPort" .) $consumerGroup -}}
 {{- else -}}
-{{- fail "backgroundWorker.autoscaling.metricsUrl must be set when responsesApiStoreService.enabled is false and backgroundWorker.autoscaling.driver is store-metrics" -}}
-{{- end -}}
-{{- end -}}
-
-{{- define "duihua.background.autoscaling.jobsPerReplica" -}}
-{{- $autoscaling := .Values.backgroundWorker.autoscaling | default dict -}}
-{{- $driver := include "duihua.background.autoscaling.driver" . -}}
-{{- if eq $driver "redis-streams" -}}
-{{- if hasKey $autoscaling "lagCount" -}}
-{{- $autoscaling.lagCount -}}
-{{- else if hasKey $autoscaling "jobsPerReplica" -}}
-{{- $autoscaling.jobsPerReplica -}}
-{{- else -}}
-5
-{{- end -}}
-{{- else -}}
-{{- if hasKey $autoscaling "jobsPerReplica" -}}
-{{- $autoscaling.jobsPerReplica -}}
-{{- else if hasKey $autoscaling "lagCount" -}}
-{{- $autoscaling.lagCount -}}
-{{- else -}}
-5
-{{- end -}}
-{{- end -}}
-{{- end -}}
-
-{{- define "duihua.background.autoscaling.activationTargetValue" -}}
-{{- $autoscaling := .Values.backgroundWorker.autoscaling | default dict -}}
-{{- $driver := include "duihua.background.autoscaling.driver" . -}}
-{{- if eq $driver "redis-streams" -}}
-{{- if hasKey $autoscaling "activationLagCount" -}}
-{{- $autoscaling.activationLagCount -}}
-{{- else if hasKey $autoscaling "activationTargetValue" -}}
-{{- $autoscaling.activationTargetValue -}}
-{{- else -}}
-0
-{{- end -}}
-{{- else -}}
-{{- if hasKey $autoscaling "activationTargetValue" -}}
-{{- $autoscaling.activationTargetValue -}}
-{{- else if hasKey $autoscaling "activationLagCount" -}}
-{{- $autoscaling.activationLagCount -}}
-{{- else -}}
-0
-{{- end -}}
-{{- end -}}
-{{- end -}}
-
-{{- define "duihua.background.autoscaling.activationLagCount" -}}
-{{- include "duihua.background.autoscaling.activationTargetValue" . -}}
-{{- end -}}
-
-{{- define "duihua.background.autoscaling.scaledownPeriod" -}}
-{{- $autoscaling := .Values.backgroundWorker.autoscaling | default dict -}}
-{{- if hasKey $autoscaling "scaledownPeriod" -}}
-{{- $autoscaling.scaledownPeriod -}}
-{{- else -}}
-300
+{{- fail "duihua-background-worker.autoscaling.metricsUrl must be set when responsesApiStoreService.enabled is false and duihua-background-worker.autoscaling.driver is store-metrics" -}}
 {{- end -}}
 {{- end -}}
 
 {{- define "duihua.background.enabled" -}}
-{{- if ne (include "duihua.responsesApiStore.enabled" .) "true" -}}
-{{- else if not .Values.backgroundWorker.enabled -}}
-{{- else -}}
+{{- if eq (include "duihua.responsesApiStore.enabled" .) "true" -}}
+{{- $worker := index .Values "duihua-background-worker" | default dict -}}
+{{- if $worker.enabled -}}
 {{- $gateway := index .Values "duihua-gateway" | default dict -}}
-{{- if eq (dig "responsesApiStore" "backgroundJobs" "enabled" true $gateway) false -}}
-{{- else -}}
+{{- if dig "responsesApiStore" "backgroundJobs" "enabled" true $gateway -}}
 true
+{{- end -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}
@@ -275,7 +209,7 @@ true
 {{- if hasKey $backgroundJobs "staleSeconds" -}}
 {{- get $backgroundJobs "staleSeconds" -}}
 {{- else -}}
-{{- .Values.backgroundWorker.staleSeconds | default 3600 -}}
+{{- dig "staleSeconds" 3600 (index .Values "duihua-background-worker" | default dict) -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}
@@ -298,11 +232,18 @@ true
 {{- end -}}
 {{- end -}}
 {{- $backgroundJobs := dig "responsesApiStore" "backgroundJobs" dict $gateway -}}
-{{- if and (hasKey $backgroundJobs "consumerGroup") (ne (get $backgroundJobs "consumerGroup") .Values.backgroundWorker.consumerGroup) -}}
-{{- fail (printf "duihua-gateway.responsesApiStore.backgroundJobs.consumerGroup (%v) must match backgroundWorker.consumerGroup (%v)" (get $backgroundJobs "consumerGroup") .Values.backgroundWorker.consumerGroup) -}}
+{{- $worker := index .Values "duihua-background-worker" | default dict -}}
+{{- if and (hasKey $backgroundJobs "consumerGroup") (ne (get $backgroundJobs "consumerGroup") ($worker.consumerGroup | default "duihua-background")) -}}
+{{- fail (printf "duihua-gateway.responsesApiStore.backgroundJobs.consumerGroup (%v) must match duihua-background-worker.consumerGroup (%v)" (get $backgroundJobs "consumerGroup") ($worker.consumerGroup | default "duihua-background")) -}}
 {{- end -}}
-{{- if and (not .Values.backgroundWorker.enabled) (dig "responsesApiStore" "backgroundJobs" "enabled" true $gateway) -}}
-{{- fail "backgroundWorker.enabled=false requires duihua-gateway.responsesApiStore.backgroundJobs.enabled=false" -}}
+{{- if and (not $worker.enabled) (dig "responsesApiStore" "backgroundJobs" "enabled" true $gateway) -}}
+{{- fail "duihua-background-worker.enabled=false requires duihua-gateway.responsesApiStore.backgroundJobs.enabled=false" -}}
+{{- end -}}
+{{- if and $worker.enabled (ne (include "duihua.responsesApiStore.enabled" .) "true") -}}
+{{- fail "duihua-background-worker.enabled=true requires duihua-gateway.responsesApiStore.enabled=true" -}}
+{{- end -}}
+{{- if and $worker.enabled (not (dig "responsesApiStore" "endpoint" "" $worker)) (eq (include "duihua.responsesApiStoreService.enabled" .) "true") -}}
+{{- fail (printf "duihua-background-worker.enabled=true requires duihua-background-worker.responsesApiStore.endpoint (e.g. %s)" (include "duihua.responsesApiStoreEndpoint" .)) -}}
 {{- end -}}
 {{- if eq (include "duihua.responsesApiStoreService.enabled" .) "true" -}}
 {{- $store := get .Values "responses-api-store" | default dict -}}
@@ -313,22 +254,12 @@ true
 {{- fail (printf "duihua-gateway.responsesApiStore.backgroundJobs.staleSeconds (%v) must match responses-api-store.store.staleSeconds (%v)" (get $backgroundJobs "staleSeconds") $configured) -}}
 {{- end -}}
 {{- end -}}
-{{- if hasKey .Values.backgroundWorker "staleSeconds" -}}
-{{- if ne (.Values.backgroundWorker.staleSeconds | int) $configured -}}
-{{- fail (printf "backgroundWorker.staleSeconds (%v) must match responses-api-store.store.staleSeconds (%v); set responses-api-store.store.staleSeconds instead" .Values.backgroundWorker.staleSeconds $configured) -}}
+{{- if hasKey $worker "staleSeconds" -}}
+{{- if ne ($worker.staleSeconds | int) $configured -}}
+{{- fail (printf "duihua-background-worker.staleSeconds (%v) must match responses-api-store.store.staleSeconds (%v); set responses-api-store.store.staleSeconds instead" $worker.staleSeconds $configured) -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}
 
-{{- define "duihua.background.autoscaling.enabled" -}}
-{{- if ne (include "duihua.background.enabled" .) "true" -}}
-{{- else if not .Values.backgroundWorker.autoscaling.enabled -}}
-{{- else -}}
-true
-{{- end -}}
-{{- end -}}
-
-{{- define "duihua.background.queueBootstrap.enabled" -}}
-{{- end -}}

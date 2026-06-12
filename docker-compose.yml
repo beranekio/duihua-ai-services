@@ -7,10 +7,10 @@
 # With bundled vLLM CPU upstream:
 #   docker compose --profile inference up
 #
-# With Responses API store + Valkey:
-#   docker compose --profile store up
+# With Responses API store, Valkey, and background worker:
+#   RESPONSES_BACKGROUND_ENABLED=true docker compose --profile store up
 #
-# Full local stack (inference + store):
+# Full local stack (inference + store + background worker):
 #   docker compose --profile inference --profile store up
 
 services:
@@ -59,6 +59,20 @@ services:
       start_period: 5s
     depends_on:
       valkey:
+        condition: service_healthy
+
+  duihua-background-worker:
+    profiles: [store]
+    image: ${DUIHUA_BACKGROUND_WORKER_IMAGE:-ghcr.io/beranekio/duihua-background-worker:latest}
+    pull_policy: always
+    environment:
+      RESPONSES_API_STORE_ENDPOINT: http://responses-api-store:50051
+      RESPONSE_ID_STORE_TTL_SECONDS: "86400"
+      BACKGROUND_QUEUE_CONSUMER_GROUP: duihua-background
+      BACKGROUND_UPSTREAM_TIMEOUT_SECONDS: "600"
+      RUST_LOG: ${RUST_LOG:-info}
+    depends_on:
+      responses-api-store:
         condition: service_healthy
 
   valkey:

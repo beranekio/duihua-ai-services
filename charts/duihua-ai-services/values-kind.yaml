@@ -42,14 +42,20 @@ duihua-gateway:
       enabled: true
       consumerGroup: duihua-background
 
-backgroundWorker:
+duihua-background-worker:
   enabled: true
+  serviceAccount:
+    create: false
+    name: duihua-duihua-ai-services
   upstreamTimeoutSeconds: "120"
   terminationGracePeriodSeconds: 181
   image:
     repository: duihua-background-worker
     tag: kind
-    pullPolicy: IfNotPresent
+    pullPolicy: Never
+  responsesApiStore:
+    endpoint: ""
+    responseIdStoreTtlSeconds: "86400"
   # Faster pending retries for local smoke tests (live deliveries retry once before processing).
   pendingRetrySeconds: 5
   # Keep below the responses-api-store Valkey client response timeout (500ms).
@@ -59,6 +65,7 @@ backgroundWorker:
     driver: store-metrics
     jobsPerReplica: 1
     activationTargetValue: 0
+    metricsUrl: ""
     pollingInterval: 5
     scaledownPeriod: 60
     replicas:

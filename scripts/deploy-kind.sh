@@ -9,8 +9,6 @@ NAMESPACE="${NAMESPACE:-duihua}"
 CHART_PATH="${CHART_PATH:-$ROOT_DIR/charts/duihua-ai-services}"
 VALUES_FILE="${VALUES_FILE:-$ROOT_DIR/charts/duihua-ai-services/values-kind.yaml}"
 EXTRA_VALUES_FILE="${EXTRA_VALUES_FILE:-}"
-BACKGROUND_WORKER_IMAGE_REPO="${BACKGROUND_WORKER_IMAGE_REPO:-duihua-background-worker}"
-BACKGROUND_WORKER_IMAGE_TAG="${BACKGROUND_WORKER_IMAGE_TAG:-local}"
 INFERENCE_ENABLED="${INFERENCE_ENABLED:-true}"
 TIMEOUT="${TIMEOUT:-300s}"
 
@@ -20,8 +18,6 @@ if [[ -n "${EXTRA_VALUES_FILE}" ]]; then
 fi
 
 helm_set_args=(
-  --set "backgroundWorker.image.repository=${BACKGROUND_WORKER_IMAGE_REPO}"
-  --set "backgroundWorker.image.tag=${BACKGROUND_WORKER_IMAGE_TAG}"
   --set "inference.enabled=${INFERENCE_ENABLED}"
 )
 
@@ -65,20 +61,42 @@ kubectl() {
 
 "${ROOT_DIR}/scripts/update-helm-dependencies.sh"
 
+store_endpoint=""
 if [[ -v GATEWAY_STORE_ENDPOINT ]]; then
-  helm_set_args+=(--set "duihua-gateway.responsesApiStore.endpoint=${GATEWAY_STORE_ENDPOINT}")
+  store_endpoint="${GATEWAY_STORE_ENDPOINT}"
 else
   configured_store_endpoint="$(probe_data_read configuredStoreEndpoint)"
-  if [[ -z "${configured_store_endpoint}" && "$(probe_data_read responsesApiStoreServiceEnabled)" == "true" ]]; then
+  if [[ -n "${configured_store_endpoint}" ]]; then
+    store_endpoint="${configured_store_endpoint}"
+  elif [[ "$(probe_data_read responsesApiStoreServiceEnabled)" == "true" ]]; then
+    store_endpoint="$(probe_data_read defaultStoreEndpoint)"
+  fi
+fi
+bundled_store_enabled="$(probe_data_read responsesApiStoreServiceEnabled)"
+if [[ -n "${store_endpoint}" ]]; then
+  helm_set_args+=(
+    --set "duihua-gateway.responsesApiStore.endpoint=${store_endpoint}"
+    --set "duihua-background-worker.responsesApiStore.endpoint=${store_endpoint}"
+  )
+  # Only synthesize bundled-store metrics for store-metrics autoscaling; external stores
+  # must supply duihua-background-worker.autoscaling.metricsUrl via values files.
+  if [[ "${bundled_store_enabled}" == "true" ]]; then
+    BACKGROUND_QUEUE_CONSUMER_GROUP="${BACKGROUND_QUEUE_CONSUMER_GROUP:-duihua-background}"
     helm_set_args+=(
-      --set "duihua-gateway.responsesApiStore.endpoint=http://${RELEASE_NAME}-responses-api-store:50051"
+      --set "duihua-background-worker.autoscaling.metricsUrl=http://${RELEASE_NAME}-responses-api-store.${NAMESPACE}.svc.cluster.local:8080/metrics/background-queue?consumer_group=${BACKGROUND_QUEUE_CONSUMER_GROUP}"
     )
   fi
 fi
 
+worker_metrics_url="$(probe_data backgroundWorkerMetricsUrl 2>/dev/null || true)"
+if [[ -n "${worker_metrics_url}" ]]; then
+  helm_set_args+=(--set "duihua-background-worker.autoscaling.metricsUrl=${worker_metrics_url}")
+fi
+
 PARENT_FULLNAME="$(probe_data duihuaFullname)"
 GATEWAY_FULLNAME="$(probe_data gatewayFullname)"
-if [[ -z "${PARENT_FULLNAME}" || -z "${GATEWAY_FULLNAME}" ]]; then
+WORKER_FULLNAME="$(probe_data backgroundWorkerFullname)"
+if [[ -z "${PARENT_FULLNAME}" || -z "${GATEWAY_FULLNAME}" || -z "${WORKER_FULLNAME}" ]]; then
   echo "Failed to render deploy-kind probe values from Helm." >&2
   exit 1
 fi
@@ -87,6 +105,8 @@ if [[ "$(probe_data parentServiceAccountCreate)" == "true" ]]; then
   helm_set_args+=(
     --set "duihua-gateway.serviceAccount.create=false"
     --set "duihua-gateway.serviceAccount.name=$(probe_data serviceAccountName)"
+    --set "duihua-background-worker.serviceAccount.create=false"
+    --set "duihua-background-worker.serviceAccount.name=$(probe_data serviceAccountName)"
   )
 fi
 
@@ -122,10 +142,12 @@ RELEASE_NAME="${RELEASE_NAME}" NAMESPACE="${NAMESPACE}" TIMEOUT="${TIMEOUT}" \
 
 RELEASE_NAME="${RELEASE_NAME}" NAMESPACE="${NAMESPACE}" TIMEOUT="${TIMEOUT}" \
   KUBECTL_CONTEXT="${KUBECTL_CONTEXT}" \
+  BACKGROUND_WORKER_DEPLOYMENT="${WORKER_FULLNAME}" \
   "${ROOT_DIR}/scripts/restart-background-worker-deployment.sh"
 
 RELEASE_NAME="${RELEASE_NAME}" NAMESPACE="${NAMESPACE}" TIMEOUT="${TIMEOUT}" \
   KUBECTL_CONTEXT="${KUBECTL_CONTEXT}" \
+  BACKGROUND_WORKER_DEPLOYMENT="${WORKER_FULLNAME}" \
   "${ROOT_DIR}/scripts/wait-for-background-worker-ready.sh"
 
 if [[ "${INFERENCE_ENABLED}" == "true" ]]; then

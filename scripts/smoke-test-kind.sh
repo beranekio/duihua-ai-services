@@ -63,7 +63,7 @@ wait_for_background_worker() {
     return 0
   fi
 
-  local deployment="${RELEASE_NAME}-duihua-ai-services-background-worker"
+  local deployment="${RELEASE_NAME}-duihua-background-worker"
   echo "Waiting for background worker deployment ${deployment}..."
   local wait_timeout="$((HEALTHZ_RETRIES * HEALTHZ_INTERVAL_SECONDS))"
   if ! kubectl wait --for=condition=available "deployment/${deployment}" \
@@ -326,7 +326,7 @@ background_queue_enabled() {
 }
 
 background_worker_deployed() {
-  local deployment="${RELEASE_NAME}-duihua-ai-services-background-worker"
+  local deployment="${RELEASE_NAME}-duihua-background-worker"
   kubectl get deployment "${deployment}" -n "${NAMESPACE}" >/dev/null 2>&1
 }
 
@@ -362,7 +362,7 @@ kubectl = ["kubectl"]
 context = sys.argv[3] if len(sys.argv) > 3 else os.environ.get("KUBECTL_CONTEXT", "")
 if context:
     kubectl.extend(["--context", context])
-deployment = f"{release_name}-duihua-ai-services-background-worker"
+deployment = f"{release_name}-duihua-background-worker"
 raw = subprocess.check_output(
     [*kubectl, "get", "deployment", deployment, "-n", namespace, "-o", "json"],
     text=True,
@@ -384,7 +384,7 @@ PY
 }
 
 background_worker_autoscaling_enabled() {
-  local scaledobject="${RELEASE_NAME}-duihua-ai-services-background-worker"
+  local scaledobject="${RELEASE_NAME}-duihua-background-worker"
   kubectl get scaledobject "${scaledobject}" -n "${NAMESPACE}" >/dev/null 2>&1
 }
 
@@ -403,7 +403,7 @@ test_background_worker_autoscaling() {
     return 0
   fi
 
-  local deployment="${RELEASE_NAME}-duihua-ai-services-background-worker"
+  local deployment="${RELEASE_NAME}-duihua-background-worker"
   local scaledobject="${deployment}"
   local initial_replicas max_replicas
   initial_replicas="$(kubectl get deployment "${deployment}" -n "${NAMESPACE}" -o jsonpath='{.spec.replicas}')"

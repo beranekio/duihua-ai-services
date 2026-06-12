@@ -6,7 +6,7 @@ Guidance for human and AI contributors working in this repository.
 - This repo provides a Kubernetes-first, OpenAI API-compatible serving stack.
 - Main components:
   - [beranekio/duihua-gateway](https://github.com/beranekio/duihua-gateway) (Rust/Axum API gateway, consumed as Helm subchart)
-  - `services/background-worker` (Valkey stream consumer for background Responses API requests)
+  - [beranekio/duihua-background-worker](https://github.com/beranekio/duihua-background-worker) (Valkey stream consumer for background Responses API requests, consumed as Helm subchart)
   - `charts/duihua-ai-services` (Helm chart)
   - `scripts/` (local kind + deployment helpers)
   - `docs/` (operations notes)
@@ -22,11 +22,10 @@ Guidance for human and AI contributors working in this repository.
 
 **Required before push** when a commit changes either:
 - `charts/duihua-ai-services/` (chart templates, values, subchart pins, or chart defaults),
-- `services/background-worker/` (worker source, Dockerfile, or queue consumer behavior),
 - `scripts/` when deploy or smoke-test behavior changes, or
-- Gateway integration in this repo (values/scripts referencing `duihua-gateway`).
+- Gateway or background-worker integration in this repo (values/scripts referencing `duihua-gateway` or `duihua-background-worker`).
 
-Gateway source changes belong in [beranekio/duihua-gateway](https://github.com/beranekio/duihua-gateway); bump the OCI subchart pin in `Chart.yaml` when adopting a new published chart.
+Gateway source changes belong in [beranekio/duihua-gateway](https://github.com/beranekio/duihua-gateway); background worker source changes belong in [beranekio/duihua-background-worker](https://github.com/beranekio/duihua-background-worker). Bump the OCI subchart pins in `Chart.yaml` when adopting new published charts.
 
 Run the end-to-end kind smoke test so chart, gateway, and background-worker changes are validated against a real cluster, not only static checks.
 
@@ -47,12 +46,11 @@ Do not re-run `scripts/kind-local-up.sh` to pick up gateway or chart edits on an
 **Incremental refresh** (cluster already running; required after gateway or chart edits):
 
 ```bash
-scripts/build-and-load-images.sh   # after background-worker image changes (restarts Deployment if deployed)
 scripts/deploy-kind.sh             # after chart or values changes (restarts Deployments after Helm upgrade)
 scripts/smoke-test-kind.sh
 ```
 
-`scripts/build-and-load-images.sh` builds and loads only the background-worker image. The gateway image is provided by the pinned `duihua-gateway` OCI subchart. `scripts/deploy-kind.sh` restarts the gateway and background-worker Deployments by default after chart upgrades so config changes take effect. Set `GATEWAY_ROLLOUT_RESTART=false` or `BACKGROUND_WORKER_ROLLOUT_RESTART=false` to skip individual restarts, or use unique worker image tags instead of `:local`.
+Gateway and background worker images come from the pinned `duihua-gateway` and `duihua-background-worker` OCI subcharts (GHCR). `scripts/deploy-kind.sh` restarts those Deployments by default after chart upgrades so config changes take effect. Set `GATEWAY_ROLLOUT_RESTART=false` or `BACKGROUND_WORKER_ROLLOUT_RESTART=false` to skip individual restarts.
 
 `scripts/smoke-test-kind.sh` exercises sync and background Responses API flows (including completion polling when the worker Deployment is present), cancel/delete behavior, in-flight continuation rejection, and background-worker Deployment resource requests. See `README.md` (Local kind workflow scripts) for tunables such as `GATEWAY_BASE_URL`, `DEFAULT_MODEL`, `RELEASE_NAME`, and `NAMESPACE`.
 
@@ -62,18 +60,7 @@ If Docker, kind, cluster access, or sufficient resources are unavailable, still 
 
 ## Validation commands
 
-Run checks that match the files you changed. Background-worker and chart edits need both unit/static checks **and** the kind smoke test above when possible.
-
-### Rust workspace (run from `services/`)
-
-```bash
-cd services
-cargo fmt --all --check
-cargo clippy --all-targets --all-features -- -D warnings
-cargo test
-```
-
-Target the background worker with `-p duihua-background-worker`.
+Run checks that match the files you changed. Chart and deploy-script edits need both static Helm checks **and** the kind smoke test above when possible. Background-worker Rust changes belong in [beranekio/duihua-background-worker](https://github.com/beranekio/duihua-background-worker).
 
 ### Helm chart (`charts/duihua-ai-services`)
 - `helm dependency update charts/duihua-ai-services`
@@ -85,7 +72,7 @@ Target the background worker with `-p duihua-background-worker`.
 
 ### Kind integration (chart or deploy script changes; see [Pre-push kind integration test](#pre-push-kind-integration-test))
 - `scripts/kind-local-up.sh` for first-time bootstrap only
-- On an existing cluster: `scripts/build-and-load-images.sh` and/or `scripts/deploy-kind.sh` (see [incremental refresh](#when-the-environment-supports-kind))
+- On an existing cluster: `scripts/deploy-kind.sh` (see [incremental refresh](#when-the-environment-supports-kind))
 - `scripts/smoke-test-kind.sh`
 
 For unrelated edits (docs-only, scripts that do not affect deploy behavior, etc.), run only the checks relevant to those paths.
@@ -95,7 +82,7 @@ For unrelated edits (docs-only, scripts that do not affect deploy behavior, etc.
 - Avoid unrelated refactors in the same commit.
 - Document user-visible changes in `README.md` and/or `docs/operations.md`.
 - Keep Kubernetes defaults cloud-provider-neutral unless explicitly required.
-- Parent chart values for the gateway use the `duihua-gateway:` key (not `gateway:`).
+- Parent chart values for the gateway use the `duihua-gateway:` key (not `gateway:`). Background worker values use `duihua-background-worker:` (not `backgroundWorker:`).
 
 ## Agent-specific notes
 

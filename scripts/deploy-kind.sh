@@ -72,16 +72,20 @@ else
     store_endpoint="$(probe_data_read defaultStoreEndpoint)"
   fi
 fi
+bundled_store_enabled="$(probe_data_read responsesApiStoreServiceEnabled)"
 if [[ -n "${store_endpoint}" ]]; then
   helm_set_args+=(
     --set "duihua-gateway.responsesApiStore.endpoint=${store_endpoint}"
     --set "duihua-background-worker.responsesApiStore.endpoint=${store_endpoint}"
   )
-  # Subcharts are evaluated during Helm probes; seed store-metrics URL before probing.
-  BACKGROUND_QUEUE_CONSUMER_GROUP="${BACKGROUND_QUEUE_CONSUMER_GROUP:-duihua-background}"
-  helm_set_args+=(
-    --set "duihua-background-worker.autoscaling.metricsUrl=http://${RELEASE_NAME}-responses-api-store.${NAMESPACE}.svc.cluster.local:8080/metrics/background-queue?consumer_group=${BACKGROUND_QUEUE_CONSUMER_GROUP}"
-  )
+  # Only synthesize bundled-store metrics for store-metrics autoscaling; external stores
+  # must supply duihua-background-worker.autoscaling.metricsUrl via values files.
+  if [[ "${bundled_store_enabled}" == "true" ]]; then
+    BACKGROUND_QUEUE_CONSUMER_GROUP="${BACKGROUND_QUEUE_CONSUMER_GROUP:-duihua-background}"
+    helm_set_args+=(
+      --set "duihua-background-worker.autoscaling.metricsUrl=http://${RELEASE_NAME}-responses-api-store.${NAMESPACE}.svc.cluster.local:8080/metrics/background-queue?consumer_group=${BACKGROUND_QUEUE_CONSUMER_GROUP}"
+    )
+  fi
 fi
 
 worker_metrics_url="$(probe_data backgroundWorkerMetricsUrl 2>/dev/null || true)"

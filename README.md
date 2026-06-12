@@ -21,9 +21,9 @@ Duihua AI Services is an OpenAI API-compatible platform for serving open-source 
 
 ## Quick start
 
-### 1) Build images
+### 1) Images
 
-Gateway images are published from [beranekio/duihua-gateway](https://github.com/beranekio/duihua-gateway) (`ghcr.io/beranekio/duihua-gateway`). Background worker images are published from [beranekio/duihua-background-worker](https://github.com/beranekio/duihua-background-worker) (`ghcr.io/beranekio/duihua-background-worker`). Pin a git-sha tag from GHCR or build locally from that repository when hacking on worker source.
+Gateway and background worker images are published from [beranekio/duihua-gateway](https://github.com/beranekio/duihua-gateway) and [beranekio/duihua-background-worker](https://github.com/beranekio/duihua-background-worker). This chart consumes pinned OCI subcharts from GHCR; you do not build worker or gateway images from this repository.
 
 ### 2) Deploy with Helm
 
@@ -49,13 +49,12 @@ helm dependency update charts/duihua-ai-services
 helm upgrade --install duihua charts/duihua-ai-services \
   --namespace duihua \
   --create-namespace \
-  --set duihua-background-worker.enabled=true \
-  --set duihua-background-worker.image.repository=ghcr.io/beranekio/duihua-background-worker \
-  --set duihua-background-worker.image.tag=<git-sha> \
   --set duihua-gateway.env.modelUpstreams="google/gemma-4-31B-it=http://duihua-duihua-ai-services-inference-0-proxy:8080/v1"
 ```
 
 When `inference.enabled=true` (the chart default), `duihua-gateway.env.modelUpstreams` must list each bundled model and its per-model inference proxy Service (`<release>-duihua-ai-services-inference-<index>-proxy`). Helm fails at render time if it is missing. For kind/local workflows, `scripts/deploy-kind.sh` computes and injects this mapping automatically.
+
+To enable the Responses API store and background worker, use the configuration in [Responses API store](#responses-api-store) below (gateway store, worker endpoints, and `backgroundJobs` must be enabled together).
 
 ### 3) Call the API
 

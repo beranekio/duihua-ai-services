@@ -81,7 +81,7 @@ Local kind (`values-kind.yaml`) enables autoscaling with `min: 1`, `max: 2`, and
 - `scripts/restart-background-worker-deployment.sh` restarts only the worker Deployment (optional `BACKGROUND_WORKER_DEPLOYMENT_REQUIRED=true` for hard failure when missing).
 - `scripts/smoke-test-kind.sh` waits for the gateway health endpoint and, when background queueing is enabled, for the background-worker Deployment to become ready before exercising completion, cancel, delete, resource checks, and optional KEDA scale-up when `duihua-background-worker.autoscaling.enabled=true`.
 
-Set `duihua-background-worker.enabled=false` to disable the worker Deployment while keeping the response store enabled. Disable `duihua-gateway.responsesApiStore.enabled` to turn off persistence and queueing entirely.
+Set `duihua-background-worker.enabled=false` to disable the worker Deployment while keeping the response store enabled (leave `duihua-gateway.responsesApiStore.backgroundJobs.enabled=false`, the chart default). Disable `duihua-gateway.responsesApiStore.enabled` to turn off persistence and queueing entirely.
 
 #### Background worker rollouts and graceful shutdown
 

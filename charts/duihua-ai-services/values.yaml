@@ -65,7 +65,8 @@ duihua-gateway:
     # use scripts/deploy-kind.sh which wires the subchart Service automatically.
     endpoint: ""
     backgroundJobs:
-      enabled: true
+      # Enable with duihua-background-worker.enabled=true.
+      enabled: false
       consumerGroup: *consumer-group
     # Override the store metrics URL for KEDA when responsesApiStoreService.enabled=false.
     metricsUrl: ""
@@ -97,7 +98,9 @@ duihua-background-worker:
     driver: store-metrics
     lagCount: 5
     activationLagCount: 0
-    # Override when responsesApiStoreService.enabled=false or metrics are exposed elsewhere.
+    # Required for store-metrics when enabled. With the bundled store subchart, set to
+    # http://<release>-responses-api-store.<namespace>.svc.cluster.local:8080/metrics/background-queue?consumer_group=<consumerGroup>
+    # (scripts/deploy-kind.sh wires this automatically for kind workflows).
     metricsUrl: ""
     scaledownPeriod: 300
     pollingInterval: 15

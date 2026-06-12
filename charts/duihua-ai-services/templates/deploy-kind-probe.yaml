@@ -11,6 +11,11 @@ data:
   modelUpstreams: {{ include "duihua.gateway.modelUpstreams" . | quote }}
   configuredStoreEndpoint: {{ dig "responsesApiStore" "endpoint" "" (index .Values "duihua-gateway" | default dict) | quote }}
   responsesApiStoreServiceEnabled: {{ include "duihua.responsesApiStoreService.enabled" . | quote }}
+  {{- if eq (include "duihua.responsesApiStoreService.enabled" .) "true" }}
+  defaultStoreEndpoint: {{ include "duihua.responsesApiStoreEndpoint" . | quote }}
+  {{- end }}
   backgroundWorkerFullname: {{ include "duihua.backgroundWorker.fullname" . | quote }}
+  {{- if eq (include "duihua.backgroundWorker.storeMetricsAutoscaling" .) "true" }}
   backgroundWorkerMetricsUrl: {{ include "duihua.backgroundWorker.autoscaling.metricsUrl" . | quote }}
+  {{- end }}
 {{- end }}

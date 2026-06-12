@@ -119,7 +119,7 @@ responses-api-store:
 
 With external Redis above, keep the default `store-metrics` autoscaling driver: KEDA queries the responses-api-store HTTP metrics endpoint and does not need Valkey access. The legacy `redis-streams` driver still points at the chart-managed Valkey Service name when `responsesApiStoreService.enabled=true`, even if bundled Valkey is disabled; use `store-metrics` here or see issue #58 before opting into `redis-streams`.
 
-For local Docker Compose, run `docker compose up` from the repository root. The stack pulls published gateway, responses-api-store, and background-worker images from GHCR and does not require local checkouts of [beranekio/duihua-gateway](https://github.com/beranekio/duihua-gateway) or [beranekio/duihua-background-worker](https://github.com/beranekio/duihua-background-worker). It starts the gateway only by default; add `--profile inference` for the bundled vLLM upstream and/or `--profile store` for the responses-api-store, Valkey, and background-worker services (`RESPONSES_BACKGROUND_ENABLED=true docker compose --profile store up`). Override `DUIHUA_GATEWAY_IMAGE`, `RESPONSES_API_STORE_IMAGE`, or `DUIHUA_BACKGROUND_WORKER_IMAGE` to pin a specific tag. To hack on gateway or worker source, use `docker compose` in the respective repository instead.
+For local Docker Compose, run `docker compose up` from the repository root. The stack pulls published gateway, responses-api-store, and background-worker images from GHCR and does not require local checkouts of [beranekio/duihua-gateway](https://github.com/beranekio/duihua-gateway) or [beranekio/duihua-background-worker](https://github.com/beranekio/duihua-background-worker). It starts the gateway only by default; add `--profile inference` for the bundled vLLM upstream and/or `--profile store` for the responses-api-store, Valkey, and background-worker services (`RESPONSES_API_STORE_ENABLED=true RESPONSES_BACKGROUND_ENABLED=true docker compose --profile store up`). Override `DUIHUA_GATEWAY_IMAGE`, `RESPONSES_API_STORE_IMAGE`, or `DUIHUA_BACKGROUND_WORKER_IMAGE` to pin a specific tag. To hack on gateway or worker source, use `docker compose` in the respective repository instead.
 
 With the Helm chart, `background=true` Responses API requests are enqueued on a Valkey stream (via the store service) and processed by the `duihua-background-worker` Deployment (synchronous upstream call per message, result written back through the store service). On rollout restart the worker drains in-flight jobs on SIGTERM before exit; set `duihua-background-worker.terminationGracePeriodSeconds` above `duihua-background-worker.upstreamTimeoutSeconds` plus `duihua-background-worker.blockMs` and a safety margin (chart default 665s). The worker logs a recommended grace period at startup. Enable `responsesApiStoreService.enabled=true`, `duihua-gateway.responsesApiStore.enabled=true`, and `duihua-background-worker.enabled=true`. The kind workflow (`values-kind.yaml`) enables the store subchart, bundled Valkey, background worker, queue settings, and KEDA store-metrics autoscaling for local end-to-end background completion testing.
 
@@ -128,10 +128,24 @@ With the Helm chart, `background=true` Responses API requests are enqueued on a 
 When `duihua-background-worker.autoscaling.enabled=true`, the subchart creates a KEDA `ScaledObject` on the worker Deployment. By default (`driver: store-metrics`), scaling reads the store's `workload` metric from `GET /metrics/background-queue?consumer_group=...` on the responses-api-store Service (`pending + in_progress` jobs). This uses KEDA's `metrics-api` scaler (KEDA core only; the HTTP add-on is not required). KEDA does not need Valkey credentials or stream keys.
 
 ```yaml
+responsesApiStoreService:
+  enabled: true
+
+duihua-gateway:
+  responsesApiStore:
+    enabled: true
+    endpoint: http://duihua-responses-api-store:50051
+    backgroundJobs:
+      enabled: true
+
 duihua-background-worker:
+  enabled: true
+  responsesApiStore:
+    endpoint: http://duihua-responses-api-store:50051
   autoscaling:
     enabled: true
     driver: store-metrics
+    metricsUrl: http://duihua-responses-api-store.duihua.svc.cluster.local:8080/metrics/background-queue?consumer_group=duihua-background
     jobsPerReplica: 5
     activationTargetValue: 0
     scaledownPeriod: 300
@@ -144,6 +158,8 @@ responses-api-store:
     enabled: true
     port: 8080
 ```
+
+Replace `duihua`, `duihua`, and `duihua-background` in `metricsUrl` with your Helm release name, namespace, and `duihua-background-worker.consumerGroup`. `scripts/deploy-kind.sh` derives this URL automatically for kind workflows.
 
 Set `replicas.min` to `1` or higher to keep at least one worker pod warm. Use `activationTargetValue: 0` (or `activationLagCount: 0`) so the first queued job wakes a worker. Tune `jobsPerReplica` or `lagCount` (average queue workload target per replica); lower values scale up sooner. The store computes `workload` from Redis Streams consumer-group stats, so Valkey/Redis **7+** is required for `store-metrics` as well as `redis-streams`. When autoscaling is enabled, KEDA owns replica counts, the subchart omits `spec.replicas`, and `duihua-background-worker.replicaCount` is ignored. With `replicas.min: 0`, the gateway ensures the stream consumer group via the responses-api-store gRPC service on startup so workers can claim jobs once scaled up.
 

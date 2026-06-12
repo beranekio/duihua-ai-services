@@ -8,10 +8,10 @@
 #   docker compose --profile inference up
 #
 # With Responses API store, Valkey, and background worker:
-#   RESPONSES_BACKGROUND_ENABLED=true docker compose --profile store up
+#   RESPONSES_API_STORE_ENABLED=true RESPONSES_BACKGROUND_ENABLED=true docker compose --profile store up
 #
 # Full local stack (inference + store + background worker):
-#   docker compose --profile inference --profile store up
+#   RESPONSES_API_STORE_ENABLED=true RESPONSES_BACKGROUND_ENABLED=true docker compose --profile inference --profile store up
 
 services:
   duihua-gateway:
@@ -65,10 +65,13 @@ services:
     profiles: [store]
     image: ${DUIHUA_BACKGROUND_WORKER_IMAGE:-ghcr.io/beranekio/duihua-background-worker:latest}
     pull_policy: always
+    stop_grace_period: 665s
     environment:
       RESPONSES_API_STORE_ENDPOINT: http://responses-api-store:50051
       RESPONSE_ID_STORE_TTL_SECONDS: "86400"
       BACKGROUND_QUEUE_CONSUMER_GROUP: duihua-background
+      # Keep below the responses-api-store Valkey client response timeout (500ms).
+      BACKGROUND_QUEUE_BLOCK_MS: "400"
       BACKGROUND_UPSTREAM_TIMEOUT_SECONDS: "600"
       RUST_LOG: ${RUST_LOG:-info}
     depends_on:

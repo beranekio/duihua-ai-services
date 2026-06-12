@@ -61,8 +61,8 @@ duihua-background-worker:
     driver: store-metrics
     jobsPerReplica: 1
     activationTargetValue: 0
-    # KEDA store-metrics endpoint; deploy-kind.sh may override from Helm probe.
-    metricsUrl: "http://duihua-responses-api-store.duihua.svc.cluster.local:8080/metrics/background-queue?consumer_group=duihua-background"
+    # metricsUrl wired by scripts/deploy-kind.sh from Helm probe values.
+    metricsUrl: ""
     pollingInterval: 5
     scaledownPeriod: 60
     replicas:

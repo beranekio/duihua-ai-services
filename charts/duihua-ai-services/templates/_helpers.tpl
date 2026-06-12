@@ -214,13 +214,35 @@ true
 {{- end -}}
 {{- end -}}
 
+{{- define "duihua.backgroundWorker.storeMetricsAutoscaling" -}}
+{{- $worker := index .Values "duihua-background-worker" | default dict -}}
+{{- if not $worker.enabled -}}
+{{- else -}}
+{{- $autoscaling := $worker.autoscaling | default dict -}}
+{{- if and $autoscaling.enabled (eq ($autoscaling.driver | default "store-metrics") "store-metrics") -}}
+true
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
 {{- define "duihua.validate.config" -}}
 {{- $gateway := index .Values "duihua-gateway" | default dict -}}
 {{- $gatewayStore := $gateway.responsesApiStore | default dict -}}
 {{- $gatewayEnv := $gateway.env | default dict -}}
+{{- $worker := index .Values "duihua-background-worker" | default dict -}}
 {{- if .Values.inference.enabled -}}
 {{- if not $gatewayEnv.modelUpstreams -}}
 {{- fail (printf "inference.enabled=true requires duihua-gateway.env.modelUpstreams (e.g. %s)" (include "duihua.gateway.modelUpstreams" .)) -}}
+{{- end -}}
+{{- end -}}
+{{- if and $worker.enabled (ne (include "duihua.responsesApiStore.enabled" .) "true") -}}
+{{- fail "duihua-background-worker.enabled=true requires duihua-gateway.responsesApiStore.enabled=true" -}}
+{{- end -}}
+{{- if and $worker.enabled (not (dig "responsesApiStore" "endpoint" "" $worker)) -}}
+{{- if eq (include "duihua.responsesApiStoreService.enabled" .) "true" -}}
+{{- fail (printf "duihua-background-worker.enabled=true requires duihua-background-worker.responsesApiStore.endpoint (e.g. %s)" (include "duihua.responsesApiStoreEndpoint" .)) -}}
+{{- else -}}
+{{- fail "duihua-background-worker.enabled=true requires duihua-background-worker.responsesApiStore.endpoint" -}}
 {{- end -}}
 {{- end -}}
 {{- if eq (include "duihua.responsesApiStore.enabled" .) "true" -}}
@@ -232,18 +254,11 @@ true
 {{- end -}}
 {{- end -}}
 {{- $backgroundJobs := dig "responsesApiStore" "backgroundJobs" dict $gateway -}}
-{{- $worker := index .Values "duihua-background-worker" | default dict -}}
 {{- if and (hasKey $backgroundJobs "consumerGroup") (ne (get $backgroundJobs "consumerGroup") ($worker.consumerGroup | default "duihua-background")) -}}
 {{- fail (printf "duihua-gateway.responsesApiStore.backgroundJobs.consumerGroup (%v) must match duihua-background-worker.consumerGroup (%v)" (get $backgroundJobs "consumerGroup") ($worker.consumerGroup | default "duihua-background")) -}}
 {{- end -}}
 {{- if and (not $worker.enabled) (dig "responsesApiStore" "backgroundJobs" "enabled" true $gateway) -}}
 {{- fail "duihua-background-worker.enabled=false requires duihua-gateway.responsesApiStore.backgroundJobs.enabled=false" -}}
-{{- end -}}
-{{- if and $worker.enabled (ne (include "duihua.responsesApiStore.enabled" .) "true") -}}
-{{- fail "duihua-background-worker.enabled=true requires duihua-gateway.responsesApiStore.enabled=true" -}}
-{{- end -}}
-{{- if and $worker.enabled (not (dig "responsesApiStore" "endpoint" "" $worker)) (eq (include "duihua.responsesApiStoreService.enabled" .) "true") -}}
-{{- fail (printf "duihua-background-worker.enabled=true requires duihua-background-worker.responsesApiStore.endpoint (e.g. %s)" (include "duihua.responsesApiStoreEndpoint" .)) -}}
 {{- end -}}
 {{- if eq (include "duihua.responsesApiStoreService.enabled" .) "true" -}}
 {{- $store := get .Values "responses-api-store" | default dict -}}

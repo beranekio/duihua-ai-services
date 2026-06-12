@@ -24,7 +24,12 @@ jobs:
         run: helm dependency build charts/duihua-ai-services
 
       - name: Lint chart
-        run: helm lint charts/duihua-ai-services -f charts/duihua-ai-services/values-kind.yaml
+        run: |
+          helm lint charts/duihua-ai-services \
+            -f charts/duihua-ai-services/values-kind.yaml \
+            --set duihua-gateway.responsesApiStore.endpoint=http://duihua-responses-api-store:50051 \
+            --set duihua-background-worker.responsesApiStore.endpoint=http://duihua-responses-api-store:50051 \
+            --set duihua-background-worker.autoscaling.metricsUrl=http://duihua-responses-api-store.duihua.svc.cluster.local:8080/metrics/background-queue?consumer_group=duihua-background
 
       - name: Verify default values fail validation
         run: |

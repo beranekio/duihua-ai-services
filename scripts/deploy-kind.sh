@@ -69,7 +69,7 @@ else
   if [[ -n "${configured_store_endpoint}" ]]; then
     store_endpoint="${configured_store_endpoint}"
   elif [[ "$(probe_data_read responsesApiStoreServiceEnabled)" == "true" ]]; then
-    store_endpoint="http://${RELEASE_NAME}-responses-api-store:50051"
+    store_endpoint="$(probe_data_read defaultStoreEndpoint)"
   fi
 fi
 if [[ -n "${store_endpoint}" ]]; then
@@ -77,10 +77,13 @@ if [[ -n "${store_endpoint}" ]]; then
     --set "duihua-gateway.responsesApiStore.endpoint=${store_endpoint}"
     --set "duihua-background-worker.responsesApiStore.endpoint=${store_endpoint}"
   )
+  # Subcharts are evaluated during Helm probes; seed store-metrics URL before probing.
+  BACKGROUND_QUEUE_CONSUMER_GROUP="${BACKGROUND_QUEUE_CONSUMER_GROUP:-duihua-background}"
+  helm_set_args+=(
+    --set "duihua-background-worker.autoscaling.metricsUrl=http://${RELEASE_NAME}-responses-api-store.${NAMESPACE}.svc.cluster.local:8080/metrics/background-queue?consumer_group=${BACKGROUND_QUEUE_CONSUMER_GROUP}"
+  )
 fi
 
-# Subcharts are evaluated during Helm probes; ensure store-metrics URL is set
-# before any full probe render when kind values enable worker autoscaling.
 worker_metrics_url="$(probe_data backgroundWorkerMetricsUrl 2>/dev/null || true)"
 if [[ -n "${worker_metrics_url}" ]]; then
   helm_set_args+=(--set "duihua-background-worker.autoscaling.metricsUrl=${worker_metrics_url}")
@@ -88,7 +91,8 @@ fi
 
 PARENT_FULLNAME="$(probe_data duihuaFullname)"
 GATEWAY_FULLNAME="$(probe_data gatewayFullname)"
-if [[ -z "${PARENT_FULLNAME}" || -z "${GATEWAY_FULLNAME}" ]]; then
+WORKER_FULLNAME="$(probe_data backgroundWorkerFullname)"
+if [[ -z "${PARENT_FULLNAME}" || -z "${GATEWAY_FULLNAME}" || -z "${WORKER_FULLNAME}" ]]; then
   echo "Failed to render deploy-kind probe values from Helm." >&2
   exit 1
 fi
@@ -134,10 +138,12 @@ RELEASE_NAME="${RELEASE_NAME}" NAMESPACE="${NAMESPACE}" TIMEOUT="${TIMEOUT}" \
 
 RELEASE_NAME="${RELEASE_NAME}" NAMESPACE="${NAMESPACE}" TIMEOUT="${TIMEOUT}" \
   KUBECTL_CONTEXT="${KUBECTL_CONTEXT}" \
+  BACKGROUND_WORKER_DEPLOYMENT="${WORKER_FULLNAME}" \
   "${ROOT_DIR}/scripts/restart-background-worker-deployment.sh"
 
 RELEASE_NAME="${RELEASE_NAME}" NAMESPACE="${NAMESPACE}" TIMEOUT="${TIMEOUT}" \
   KUBECTL_CONTEXT="${KUBECTL_CONTEXT}" \
+  BACKGROUND_WORKER_DEPLOYMENT="${WORKER_FULLNAME}" \
   "${ROOT_DIR}/scripts/wait-for-background-worker-ready.sh"
 
 if [[ "${INFERENCE_ENABLED}" == "true" ]]; then

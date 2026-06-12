@@ -52,10 +52,9 @@ verify_mock_vllm_upstream() {
   local probe_job="mock-vllm-upstream-probe-$$"
   local timeout="${TIMEOUT:-90s}"
 
-  cleanup() {
+  delete_probe_pod() {
     kubectl delete pod "${probe_job}" -n "${namespace}" --ignore-not-found >/dev/null 2>&1 || true
   }
-  trap cleanup RETURN
 
   echo "Probing http://${mock_vllm_service}:8000/health from inside the cluster..."
   kubectl run "${probe_job}" -n "${namespace}" \
@@ -69,9 +68,11 @@ verify_mock_vllm_upstream() {
     echo "mock-vllm upstream probe failed; pod status:" >&2
     kubectl get pod "${probe_job}" -n "${namespace}" -o wide >&2 || true
     kubectl logs "${probe_job}" -n "${namespace}" >&2 || true
+    delete_probe_pod
     return 1
   fi
 
   kubectl logs "${probe_job}" -n "${namespace}"
   echo "mock-vllm upstream probe OK"
+  delete_probe_pod
 }

@@ -39,7 +39,8 @@ lines = text.splitlines(keepends=True)
 
 in_deps = False
 current_name = None
-found = False
+seen_name = False
+found_version = False
 out = []
 
 for line in lines:
@@ -56,12 +57,14 @@ for line in lines:
         m_name = re.match(r"^(\s*)-\s*name:\s*(.+?)\s*$", line)
         if m_name:
             current_name = m_name.group(2).strip().strip("\"'")
+            if current_name == name:
+                seen_name = True
             out.append(line)
             continue
 
         m_ver = re.match(r"^(\s*)version:\s*(.+?)\s*$", line)
         if m_ver and current_name == name:
-            found = True
+            found_version = True
             current = m_ver.group(2).strip().strip("\"'")
             if op == "get":
                 print(current)
@@ -74,11 +77,11 @@ for line in lines:
 
     out.append(line)
 
-if not found:
+if not seen_name:
     print(f"dependency {name!r} not found in {path}", file=sys.stderr)
     sys.exit(1)
 
-if op == "get":
+if not found_version:
     print(f"dependency {name!r} has no version field in {path}", file=sys.stderr)
     sys.exit(1)
 

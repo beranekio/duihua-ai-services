@@ -88,3 +88,20 @@ Set `duihua-background-worker.enabled=false` to disable the worker Deployment wh
 On SIGTERM (Helm upgrade, `kubectl rollout restart`, or pod deletion), the worker stops issuing new `XREADGROUP` / `XAUTOCLAIM` reads, closes its concurrency limiter, and awaits in-flight upstream jobs before exiting. Tune `duihua-background-worker.terminationGracePeriodSeconds` to exceed `duihua-background-worker.upstreamTimeoutSeconds` plus the configured `duihua-background-worker.blockMs` interval and a safety margin (chart default 665s = 600s upstream + 5s block + 60s margin). SIGTERM can arrive while `XREADGROUP BLOCK` is in flight; the worker lets that read finish before draining any entry it claimed, so grace must cover block time as well as upstream timeout. The worker logs a recommended value at startup; align the chart setting with that figure so rollouts can finish active background Responses API work instead of leaving entries orphaned in the old pod's pending list until autoclaim marks them failed.
 
 `scripts/restart-deployment.sh` with `COMPONENT=background-worker` (used by `deploy-kind.sh`) triggers this path; allow the grace period to elapse before forcing pod deletion.
+
+## Updating OCI subchart pins
+
+Component charts are published to `oci://ghcr.io/beranekio/charts` as `0.0.0-<gitsha>` from each source repo's publish workflow. The umbrella chart pins those versions in `charts/duihua-ai-services/Chart.yaml`.
+
+Stock Dependabot cannot usefully order SHA-style chart versions, so this repo uses:
+
+- `scripts/update-oci-subcharts.sh` — sets each dependency version to the source repo's current `main` SHA and runs `helm dependency update`
+- `.github/workflows/update-oci-subcharts.yml` — weekly (Monday 06:00 UTC) and `workflow_dispatch`; opens a PR labeled `dependencies` when pins change
+
+Manual catch-up:
+
+```bash
+scripts/update-oci-subcharts.sh
+```
+
+Requires `gh`, `yq`, and `helm`, plus network access to GitHub and GHCR.

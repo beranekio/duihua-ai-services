@@ -26,11 +26,6 @@ jobs:
       - name: Set up Helm
         uses: azure/setup-helm@v5
 
-      - name: Install yq
-        run: |
-          sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/download/v4.45.4/yq_linux_amd64
-          sudo chmod +x /usr/local/bin/yq
-
       - name: Log in to GHCR (helm pull)
         uses: docker/login-action@v4
         with:

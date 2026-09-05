@@ -12,8 +12,8 @@ if ! command -v gh >/dev/null; then
   echo "gh is required" >&2
   exit 1
 fi
-if ! command -v yq >/dev/null; then
-  echo "yq is required" >&2
+if ! command -v python3 >/dev/null; then
+  echo "python3 is required" >&2
   exit 1
 fi
 if ! command -v helm >/dev/null; then
@@ -23,26 +23,91 @@ fi
 
 OWNER="${GITHUB_REPOSITORY_OWNER:-beranekio}"
 
-declare -A SOURCE_REPO=(
-  [duihua-gateway]=duihua-gateway
-  [duihua-background-worker]=duihua-background-worker
-  [responses-api-store]=responses-api-store
-)
+# Read or write a dependency version in Chart.yaml without yq/PyYAML.
+# Expects the standard Helm list shape under `dependencies:`.
+chart_dep_version() {
+  local op="$1" name="$2" version="${3:-}"
+  NAME="$name" VERSION="$version" OP="$op" CHART_YAML="$CHART_YAML" python3 <<'PY'
+import os, pathlib, re, sys
+
+path = pathlib.Path(os.environ["CHART_YAML"])
+name = os.environ["NAME"]
+op = os.environ["OP"]
+new_version = os.environ.get("VERSION", "")
+text = path.read_text()
+lines = text.splitlines(keepends=True)
+
+in_deps = False
+current_name = None
+seen_name = False
+found_version = False
+out = []
+
+for line in lines:
+    if re.match(r"^dependencies:\s*$", line):
+        in_deps = True
+        out.append(line)
+        continue
+
+    if in_deps and re.match(r"^[A-Za-z]", line):
+        in_deps = False
+        current_name = None
+
+    if in_deps:
+        m_name = re.match(r"^(\s*)-\s*name:\s*(.+?)\s*$", line)
+        if m_name:
+            current_name = m_name.group(2).strip().strip("\"'")
+            if current_name == name:
+                seen_name = True
+            out.append(line)
+            continue
+
+        m_ver = re.match(r"^(\s*)version:\s*(.+?)\s*$", line)
+        if m_ver and current_name == name:
+            found_version = True
+            current = m_ver.group(2).strip().strip("\"'")
+            if op == "get":
+                print(current)
+                sys.exit(0)
+            if op == "set":
+                indent = m_ver.group(1)
+                out.append(f"{indent}version: {new_version}\n")
+                current_name = None
+                continue
+
+    out.append(line)
+
+if not seen_name:
+    print(f"dependency {name!r} not found in {path}", file=sys.stderr)
+    sys.exit(1)
+
+if not found_version:
+    print(f"dependency {name!r} has no version field in {path}", file=sys.stderr)
+    sys.exit(1)
+
+if op == "set":
+    path.write_text("".join(out))
+PY
+}
 
 changed=0
 summary=()
 
 for name in duihua-gateway duihua-background-worker responses-api-store; do
-  repo="${SOURCE_REPO[$name]}"
+  repo="$name"
   sha="$(gh api "repos/${OWNER}/${repo}/commits/main" --jq .sha)"
   version="0.0.0-${sha}"
-  current="$(yq -r ".dependencies[] | select(.name == \"${name}\") | .version" "${CHART_YAML}")"
+  current="$(chart_dep_version get "${name}")"
+  if [[ -z "${current}" || "${current}" == "null" ]]; then
+    echo "dependency ${name}: missing version in Chart.yaml" >&2
+    exit 1
+  fi
   if [[ "${current}" == "${version}" ]]; then
     echo "${name}: already at ${version}"
     continue
   fi
   echo "${name}: ${current} -> ${version}"
-  yq -i "(.dependencies[] | select(.name == \"${name}\") | .version) = \"${version}\"" "${CHART_YAML}"
+  chart_dep_version set "${name}" "${version}"
   changed=1
   summary+=("- ${name}: \`${current}\` → \`${version}\`")
 done

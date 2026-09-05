@@ -104,4 +104,4 @@ Manual catch-up:
 scripts/update-oci-subcharts.sh
 ```
 
-Requires `gh`, `yq`, and `helm`, plus network access to GitHub and GHCR.
+Requires `gh`, `python3`, and `helm`, plus network access to GitHub and GHCR.

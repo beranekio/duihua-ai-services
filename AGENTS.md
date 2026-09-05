@@ -63,6 +63,7 @@ If Docker, kind, cluster access, or sufficient resources are unavailable, still 
 Run checks that match the files you changed. Chart and deploy-script edits need both static Helm checks **and** the kind smoke test above when possible. Background-worker Rust changes belong in [beranekio/duihua-background-worker](https://github.com/beranekio/duihua-background-worker).
 
 ### Helm chart (`charts/duihua-ai-services`)
+- `scripts/update-oci-subcharts.sh` when refreshing OCI subchart pins (or rely on the weekly `Update OCI subcharts` workflow)
 - `helm dependency update charts/duihua-ai-services`
 - `helm lint charts/duihua-ai-services`
 - `helm template duihua charts/duihua-ai-services -f charts/duihua-ai-services/values-kind.yaml >/tmp/duihua-rendered.yaml`

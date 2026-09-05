@@ -1,5 +1,8 @@
 version: 2
 updates:
+  # Helm OCI subcharts use 0.0.0-<gitsha> pins from oci://ghcr.io/beranekio/charts.
+  # Dependabot cannot usefully order those versions — see
+  # scripts/update-oci-subcharts.sh and .github/workflows/update-oci-subcharts.yml.
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:

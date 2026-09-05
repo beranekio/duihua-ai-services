@@ -1,0 +1,67 @@
+name: Update OCI subcharts
+
+on:
+  schedule:
+    # Mondays 06:00 UTC — keep umbrella pins close to component main publishes
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+concurrency:
+  group: update-oci-subcharts
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: write
+  packages: read
+
+jobs:
+  update:
+    name: Bump OCI subchart pins
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v5
+
+      - name: Install yq
+        run: |
+          sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/download/v4.45.4/yq_linux_amd64
+          sudo chmod +x /usr/local/bin/yq
+
+      - name: Log in to GHCR (helm pull)
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Update subchart pins
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY_OWNER: ${{ github.repository_owner }}
+        run: scripts/update-oci-subcharts.sh
+
+      - name: Create or update pull request
+        uses: peter-evans/create-pull-request@v8
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: "build(deps): bump OCI subchart pins to latest main"
+          branch: chore/update-oci-subcharts
+          delete-branch: true
+          title: "build(deps): bump OCI subchart pins to latest main"
+          labels: dependencies,grok
+          body: |
+            ## Summary
+            Automated bump of OCI Helm subchart pins in `charts/duihua-ai-services` to each component repo's current `main` SHA (`0.0.0-<sha>`), matching the publish workflows in those repos.
+
+            Stock Dependabot cannot usefully order `0.0.0-<gitsha>` versions from `oci://ghcr.io/beranekio/charts`, so this workflow is the update path instead.
+
+            ## Validation
+            - `scripts/update-oci-subcharts.sh` (includes `helm dependency update`)
+            - CI Validate / Helm chart validation on this PR
+            - Kind smoke test: not run by this bot workflow; run `scripts/kind.sh smoke` (or incremental deploy + smoke) before merging when practical
+
+            /cc @${{ github.repository_owner }}

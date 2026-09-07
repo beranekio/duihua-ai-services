@@ -13,6 +13,6 @@ dependencies:
     repository: oci://ghcr.io/beranekio/charts
     condition: duihua-background-worker.enabled
   - name: responses-api-store
-    version: 0.0.0-9e7b2e766a3c003b7039fb7e242021bc19c1c9f6
+    version: 0.0.0-8f17c89c62e96cb1fb6d3669513df5ef01b167d3
     repository: oci://ghcr.io/beranekio/charts
     condition: responsesApiStoreService.enabled

@@ -1,12 +1,12 @@
 dependencies:
 - name: duihua-gateway
   repository: oci://ghcr.io/beranekio/charts
-  version: 0.0.0-c430d3ab41d2519a5eff9715c2d809a71d554039
+  version: 0.0.0-c6f1db58836c05ede626f24c60133a1b1ffc6aee
 - name: duihua-background-worker
   repository: oci://ghcr.io/beranekio/charts
-  version: 0.0.0-54f7ff95ca2a3a6ff4e70b7be608ee93f2f273ea
+  version: 0.0.0-6347d21b01158e9bb42687989328c52a00702df0
 - name: responses-api-store
   repository: oci://ghcr.io/beranekio/charts
-  version: 0.0.0-399fb296927a8c48fa9bcb662cd01dc460a0c3a5
-digest: sha256:e4aa60ef1a1718c424dde14dc758a81b38b649be313659610e0675aec635cddf
-generated: "2026-10-26T06:28:42.827700059Z"
+  version: 0.0.0-176b5699db2f5a24c7d1f36468af1b2593cb5f54
+digest: sha256:a8b8689536b72f0f432a23b4a4e81a1e02ce49a2cdc5c98b4e819fb329b3240d
+generated: "2026-11-02T07:10:20.840689708Z"

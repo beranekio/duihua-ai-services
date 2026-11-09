@@ -6,10 +6,10 @@ version: 0.1.0
 appVersion: "0.1.0"
 dependencies:
   - name: duihua-gateway
-    version: 0.0.0-c6f1db58836c05ede626f24c60133a1b1ffc6aee
+    version: 0.0.0-eb42d93bdb65f44ff7cd275b51cee3b083a2454f
     repository: oci://ghcr.io/beranekio/charts
   - name: duihua-background-worker
-    version: 0.0.0-6347d21b01158e9bb42687989328c52a00702df0
+    version: 0.0.0-d2d4a14732bc3ca749092d32369174b97791047c
     repository: oci://ghcr.io/beranekio/charts
     condition: duihua-background-worker.enabled
   - name: responses-api-store
